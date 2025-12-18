@@ -44,3 +44,10 @@ This lab is designed for researchers exploring:
 Clone the repository:
 ```bash
 git clone https://github.com/topherchris420/ions-x-deep-emergence-lab.git
+
+### 1. Standard Installation (CPU Mode)
+
+Install the core scientific stack required to run the ATOM framework:
+
+```bash
+pip install numpy scipy matplotlib networkx
