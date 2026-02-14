@@ -1,6 +1,6 @@
-# IONS_X Deep Emergence Lab
+# IONS-X Deep Emergence Lab
 
-The **IONS_X Deep Emergence Lab** is an open-source, computational research framework designed to investigate the emergence of causal structures within complex, coupled dynamical systems. This project is a direct realization of the Institute of Noetic Sciences (IONS) *moonshot* research program, which seeks to demonstrate practical applications of nonlocal consciousness-related phenomena.
+The **IONS-X Deep Emergence Lab** is an open-source, computational research framework designed to investigate the emergence of causal structures within complex, coupled dynamical systems. This project is a direct realization of the Institute of Noetic Sciences (IONS) *moonshot* research program, which seeks to demonstrate practical applications of nonlocal consciousness-related phenomena.
 
 By simulating autonomous agents (Operators) that sample and analyze multi-channel field dynamics (Targets) under varying environmental conditions (Moderators), this framework provides a quantitative platform for studying mind-matter interaction effects and collective intuition.
 
@@ -8,7 +8,7 @@ By simulating autonomous agents (Operators) that sample and analyze multi-channe
 
 ## The ATOM Framework Implementation
 
-This implementation is structured around the four pillars of the IONS_X strategy.
+This implementation is structured around the four pillars of the IONS-X strategy.
 
 ### Analyses (A)
 Implements multi-scale temporal lag analysis and machine-learning-ready relationship detection to identify patterns among complex variables.
@@ -41,13 +41,21 @@ This lab is designed for researchers exploring:
 
 ## Installation and Setup
 
-Clone the repository:
+### 1. Clone the repository
+
 ```bash
 git clone https://github.com/topherchris420/ions-x-deep-emergence-lab.git
+cd ions-x-deep-emergence-lab
+```
 
-### 1. Standard Installation (CPU Mode)
-
-Install the core scientific stack required to run the ATOM framework:
+### 2. Install dependencies (CPU mode)
 
 ```bash
-pip install numpy scipy matplotlib networkx
+pip install numpy scipy matplotlib networkx ipython
+```
+
+### 3. Run the simulation
+
+```bash
+python ions_x_deep_emergence.py
+```
