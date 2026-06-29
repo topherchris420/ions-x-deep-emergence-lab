@@ -1,42 +1,47 @@
-# Proposed Maintenance Tasks
+# Project Tasks
 
-## 1) Typo fix task
-**Issue found:** The `README.md` title uses `IONS_X` while the repository/package naming elsewhere consistently uses `ions-x` / `ions_x`, which creates naming inconsistency for users copying commands and references.
+## Done
 
-**Task:** Standardize the project name in the README title to `IONS-X Deep Emergence Lab` (or another single canonical form used across the repo).
+- Standardized the project name as `IONS-X Deep Emergence Lab`.
+- Moved runtime behavior behind `main()` and `if __name__ == "__main__"`.
+- Added deterministic tests for agent discovery, coherence windows, and import safety.
+- Added a quick command-line run path with saved HTML output.
+- Added dependency files for runtime and test setup.
+- Added a README preview asset and clearer onboarding docs.
 
-**Acceptance criteria:**
-- README title and first paragraph use one canonical project name.
-- The chosen name matches the clone URL/repository naming convention.
+## Next UX Tasks
 
-## 2) Bug fix task
-**Issue found:** `ions_x_deep_emergence.py` executes plotting/animation side effects at import time (`FuncAnimation`, `display(...)`). This prevents clean reuse as an importable module and can break non-notebook execution workflows.
+### 1. Add a real generated demo GIF
 
-**Task:** Move runtime execution into a `main()` function and guard it with `if __name__ == "__main__":`.
+Create a short animation from a known quick run and place it near the top of the README.
 
-**Acceptance criteria:**
-- Importing `ions_x_deep_emergence` does not open figures or start animation.
-- Running `python ions_x_deep_emergence.py` still produces the same visualization behavior.
+Acceptance criteria:
+- The GIF is generated from the actual simulation, not a conceptual mockup.
+- README first screen shows the project name, one-sentence value prop, and demo media.
 
-## 3) Code comment/documentation discrepancy task
-**Issue found:** The README installation section has a malformed markdown code block (the clone command fence is never closed before `### 1. Standard Installation`), so rendered docs are broken and steps appear inside a shell block.
+### 2. Add experiment presets
 
-**Task:** Repair markdown fencing and provide a complete, linear setup flow (clone, install deps, run command).
+Add named presets such as `quick`, `arv`, `coherence`, and `dense-agents` so users do not need to tune raw numbers first.
 
-**Acceptance criteria:**
-- All markdown code fences in README are properly opened/closed.
-- Setup instructions render correctly on GitHub.
-- A run command is documented after dependency installation.
+Acceptance criteria:
+- `python ions_x_deep_emergence.py --preset quick` works.
+- Presets are documented in README.
+- Unit tests cover at least two presets.
 
-## 4) Test improvement task
-**Issue found:** There are currently no automated tests for core behavior (agent discovery logic, environment modulation, and CPU fallback path).
+### 3. Export metrics beside visual output
 
-**Task:** Add a small `pytest` suite focused on deterministic unit coverage:
-- `Agent.discover()` threshold behavior.
-- `EnvironmentalModerators.is_coherence_active()` window logic.
-- Import/runtime separation (ensuring no animation side effects on import after bug fix).
+Save discoveries, coherence frames, and final graph edges as JSON or CSV.
 
-**Acceptance criteria:**
-- `pytest` runs locally with at least 3 focused tests.
-- Tests are deterministic by setting the random seed.
-- Tests cover both positive and negative cases for discovery/coherence behavior.
+Acceptance criteria:
+- Running with `--output outputs/demo.html` also writes `outputs/demo.metrics.json`.
+- Metrics include frame count, agent count, backend, total discoveries, and coherence frames.
+- Tests verify the metric file shape.
+
+### 4. Add a guided notebook
+
+Create a notebook that walks through the field, operators, moderators, and graph output in small cells.
+
+Acceptance criteria:
+- Notebook runs top-to-bottom in Colab or local Jupyter.
+- It uses quick settings by default.
+- README links to the notebook from the quickstart section.

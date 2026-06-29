@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
+  <title id="title">IONS-X Deep Emergence Lab preview</title>
+  <desc id="desc">Conceptual preview of a field simulation, autonomous operators, moderator signal, and emerging causal graph.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071018"/>
+      <stop offset="0.5" stop-color="#132018"/>
+      <stop offset="1" stop-color="#201309"/>
+    </linearGradient>
+    <radialGradient id="field" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#ffd166"/>
+      <stop offset="0.38" stop-color="#ef476f"/>
+      <stop offset="0.72" stop-color="#118ab2"/>
+      <stop offset="1" stop-color="#06121c"/>
+    </radialGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="1200" height="675" fill="url(#bg)"/>
+  <g opacity="0.24" stroke="#d8f3dc" stroke-width="1">
+    <path d="M0 118H1200M0 236H1200M0 354H1200M0 472H1200M0 590H1200"/>
+    <path d="M150 0V675M300 0V675M450 0V675M600 0V675M750 0V675M900 0V675M1050 0V675"/>
+  </g>
+  <text x="64" y="80" fill="#f8f1e5" font-family="Georgia, serif" font-size="42" font-weight="700">IONS-X Deep Emergence Lab</text>
+  <text x="66" y="120" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="19">Simulate fields, operators, moderators, and emerging causal structure.</text>
+
+  <g transform="translate(72 168)">
+    <rect width="408" height="340" rx="22" fill="#071018" stroke="#7dd3fc" stroke-opacity="0.45"/>
+    <rect x="28" y="42" width="252" height="252" rx="18" fill="url(#field)" filter="url(#glow)"/>
+    <g fill="#f8f1e5">
+      <circle cx="78" cy="96" r="5"/>
+      <circle cx="166" cy="138" r="5"/>
+      <circle cx="218" cy="222" r="5"/>
+      <circle cx="112" cy="252" r="5"/>
+      <circle cx="246" cy="88" r="5"/>
+    </g>
+    <text x="308" y="82" fill="#f8f1e5" font-family="Arial, sans-serif" font-size="18" font-weight="700">Target field</text>
+    <text x="308" y="112" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="14">4 coupled channels</text>
+    <text x="308" y="142" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="14">spectral diffusion</text>
+    <text x="308" y="172" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="14">sampled by agents</text>
+  </g>
+
+  <g transform="translate(540 172)">
+    <path d="M76 120C144 38 250 34 330 116" fill="none" stroke="#ffd166" stroke-width="5" stroke-linecap="round"/>
+    <path d="M88 176C176 130 264 132 344 180" fill="none" stroke="#06d6a0" stroke-width="5" stroke-linecap="round"/>
+    <path d="M104 238C178 270 272 270 362 232" fill="none" stroke="#7dd3fc" stroke-width="5" stroke-linecap="round"/>
+    <rect x="0" y="0" width="432" height="284" rx="22" fill="none" stroke="#f8f1e5" stroke-opacity="0.22"/>
+    <text x="32" y="52" fill="#f8f1e5" font-family="Arial, sans-serif" font-size="19" font-weight="700">Moderators</text>
+    <text x="32" y="82" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="14">geomagnetic drift</text>
+    <text x="32" y="106" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="14">lunar cycle proxy</text>
+    <text x="32" y="130" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="14">coherence windows</text>
+  </g>
+
+  <g transform="translate(625 415)" stroke="#f8f1e5" stroke-width="3" fill="#101820">
+    <line x1="80" y1="44" x2="190" y2="88" stroke="#06d6a0"/>
+    <line x1="190" y1="88" x2="306" y2="34" stroke="#7dd3fc"/>
+    <line x1="80" y1="44" x2="306" y2="34" stroke="#ffd166"/>
+    <line x1="190" y1="88" x2="260" y2="154" stroke="#ef476f"/>
+    <circle cx="80" cy="44" r="28"/>
+    <circle cx="190" cy="88" r="28"/>
+    <circle cx="306" cy="34" r="28"/>
+    <circle cx="260" cy="154" r="28"/>
+    <text x="64" y="51" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="15">ch0</text>
+    <text x="174" y="95" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="15">ch1</text>
+    <text x="290" y="41" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="15">ch2</text>
+    <text x="244" y="161" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="15">ch3</text>
+    <text x="0" y="224" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="19" font-weight="700">Emergent causal graph</text>
+    <text x="0" y="252" fill="#b7c9bd" stroke="none" font-family="Arial, sans-serif" font-size="14">relationships strengthen, decay, and disappear over time</text>
+  </g>
+</svg>

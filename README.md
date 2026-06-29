@@ -1,61 +1,135 @@
 # IONS-X Deep Emergence Lab
 
-The **IONS-X Deep Emergence Lab** is an open-source, computational research framework designed to investigate the emergence of causal structures within complex, coupled dynamical systems. This project is a direct realization of the Institute of Noetic Sciences (IONS) *moonshot* research program, which seeks to demonstrate practical applications of nonlocal consciousness-related phenomena.
+![IONS-X Deep Emergence Lab preview](docs/assets/preview.svg)
 
-By simulating autonomous agents (Operators) that sample and analyze multi-channel field dynamics (Targets) under varying environmental conditions (Moderators), this framework provides a quantitative platform for studying mind-matter interaction effects and collective intuition.
+IONS-X Deep Emergence Lab is a small Python simulation for watching causal hints emerge inside coupled dynamical fields.
 
----
+It creates a 4-channel target field, sends autonomous operators across it, modulates the environment over time, and draws the relationships those operators discover. The point is not to prove nonlocal effects. The point is to give researchers and builders a repeatable sandbox for exploring hypotheses about field dynamics, collective sensing, and signal discovery.
 
-## The ATOM Framework Implementation
+## What You See
 
-This implementation is structured around the four pillars of the IONS-X strategy.
+Running the simulation produces an HTML animation with three live views:
 
-### Analyses (A)
-Implements multi-scale temporal lag analysis and machine-learning-ready relationship detection to identify patterns among complex variables.
+- **Target field:** a heatmap of one evolving field channel.
+- **Emergent graph:** discovered relationships between channels as confidence rises and decays.
+- **Run stats:** discovery count and current environmental modulation factor.
 
-### Targets (T)
-Simulates 2D coupled fields evolved via spectral diffusion, modeling correspondences found in information-theoretic approaches to reality.
+## Quickstart
 
-### Operators (O)
-Features a diverse population of autonomous agents, including Perceivers, Forecasters, and Integrators, with specialized cognitive thresholds and temporal sensitivities.
-
-### Moderators (M)
-Incorporates dynamic environmental influences, including simulated geomagnetic fluctuations and lunar cycles, which are hypothesized to enhance or inhibit performance.
-
----
-
-## Research Applications
-
-This lab is designed for researchers exploring:
-
-- **Nonlocal Correlation Discovery**  
-  Modeling how collective decisions can outperform individual judgments, commonly referred to as the Wisdom of Crowds.
-
-- **Psi Switches and DMMI**  
-  Simulating direct mind-machine interactions where mental intention influences physical systems.
-
-- **Associative Remote Viewing (ARV)**  
-  Benchmarking forecasting algorithms against noisy, temporally displaced datasets to predict future outcomes.
-
----
-
-## Installation and Setup
-
-### 1. Clone the repository
+From a fresh clone:
 
 ```bash
 git clone https://github.com/topherchris420/ions-x-deep-emergence-lab.git
 cd ions-x-deep-emergence-lab
+python -m venv .venv
+python -m pip install -r requirements.txt
+python ions_x_deep_emergence.py --quick
 ```
 
-### 2. Install dependencies (CPU mode)
+The default output is:
+
+```text
+outputs/latest.html
+```
+
+Open that file in your browser after the run completes.
+
+On Windows PowerShell, use `py` if `python` is not on your path:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+py -m pip install -r requirements.txt
+py ions_x_deep_emergence.py --quick
+start outputs\latest.html
+```
+
+## Command-Line Options
 
 ```bash
-pip install numpy scipy matplotlib networkx ipython
+python ions_x_deep_emergence.py --quick --output outputs/demo.html
+python ions_x_deep_emergence.py --frames 120 --agents 100 --field-res 64
+python ions_x_deep_emergence.py --quick --show
 ```
 
-### 3. Run the simulation
+| Option | What it does |
+| --- | --- |
+| `--quick` | Uses a smaller run for first-time users and demos. |
+| `--frames N` | Sets the number of animation frames. |
+| `--agents N` | Sets the number of autonomous operators. |
+| `--field-res N` | Sets the 2D field resolution. |
+| `--output PATH` | Saves the HTML animation to a specific path. |
+| `--show` | Also displays inline when running in an IPython notebook. |
+
+A successful run prints a short summary:
+
+```text
+Simulation complete. Frames: 60. Agents: 50. Field: 64x64. Backend: CPU. Output: outputs/latest.html
+```
+
+## The ATOM Model
+
+This implementation is organized around the ATOM framing used by the IONS-X research strategy.
+
+### Analyses
+
+Multi-scale relationship detection over recent operator observations.
+
+### Targets
+
+A 2D, 4-channel coupled field evolved through spectral diffusion.
+
+### Operators
+
+Autonomous agents that sample field values, keep short memory, and report correlations above a confidence threshold.
+
+### Moderators
+
+Environmental modulation terms, including periodic variation and short coherence windows.
+
+## Glossary
+
+| Term | Meaning in this repo |
+| --- | --- |
+| Target | The simulated field being sampled. |
+| Operator | An autonomous sampling agent. |
+| Moderator | A changing environmental factor that affects field evolution. |
+| Discovery | A channel relationship whose correlation exceeds the configured threshold. |
+| Coherence window | A short period where modulation is boosted. |
+| Emergent graph | The directed graph of currently active discoveries. |
+
+## Research Applications
+
+This lab is useful for prototyping ideas around:
+
+- Nonlocal correlation discovery and collective signal detection.
+- Direct mind-machine interaction simulation as a computational hypothesis space.
+- Associative remote viewing style forecasting experiments against noisy, temporally displaced data.
+
+Treat the output as a simulation artifact, not a scientific claim by itself. The value is in repeatable experiments, clearer assumptions, and testable changes.
+
+## Run Tests
+
+Install the dev dependencies, then run pytest:
 
 ```bash
-python ions_x_deep_emergence.py
+python -m pip install -r requirements-dev.txt
+python -m pytest
 ```
+
+## Repository Layout
+
+```text
+ions_x_deep_emergence.py      # simulation, CLI, and HTML output
+requirements.txt              # runtime dependencies
+requirements-dev.txt          # runtime deps plus pytest
+tests/                        # deterministic unit tests
+docs/assets/preview.svg       # README visual preview
+```
+
+## Next Best Improvements
+
+- Add a generated GIF from a known quick run.
+- Add named experiment presets, for example `--preset arv` or `--preset coherence`.
+- Export run metrics as CSV or JSON beside the HTML animation.
+- Add a small notebook that explains the model step by step.

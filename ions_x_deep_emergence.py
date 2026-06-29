@@ -1,7 +1,9 @@
+import argparse
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Tuple
+from pathlib import Path
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -42,6 +44,72 @@ class CFG:
 
 CFG = CFG()
 rng = np.random.RandomState(CFG.SEED)
+DEFAULT_OUTPUT = Path('outputs/latest.html')
+
+
+@dataclass
+class RunResult:
+    output_path: Path
+    frames: int
+    agents: int
+    field_res: int
+    on_gpu: bool
+
+
+def positive_int(raw):
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError('value must be a positive integer')
+    return value
+
+
+def parse_args(argv: Optional[Sequence[str]] = None):
+    parser = argparse.ArgumentParser(
+        description='Run the IONS-X Deep Emergence Lab simulation and save an HTML animation.'
+    )
+    parser.add_argument(
+        '--quick',
+        action='store_true',
+        help='Use a smaller, faster configuration for first runs and demos.',
+    )
+    parser.add_argument('--frames', type=positive_int, help='Number of animation frames to render.')
+    parser.add_argument('--agents', type=positive_int, help='Number of autonomous agents to simulate.')
+    parser.add_argument('--field-res', type=positive_int, dest='field_res', help='2D field resolution.')
+    parser.add_argument(
+        '--output',
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help='HTML output path for the rendered animation.',
+    )
+    parser.add_argument(
+        '--show',
+        action='store_true',
+        help='Also display the animation inline when running in an IPython notebook.',
+    )
+    return parser.parse_args(argv)
+
+
+def apply_runtime_options(args):
+    if args.quick:
+        CFG.FIELD_RES = 64
+        CFG.AGENTS = 50
+        CFG.FRAMES = 60
+        CFG.SAMPLE_PER_FRAME = min(CFG.SAMPLE_PER_FRAME, 4)
+
+    if args.frames is not None:
+        CFG.FRAMES = args.frames
+    if args.agents is not None:
+        CFG.AGENTS = args.agents
+    if args.field_res is not None:
+        CFG.FIELD_RES = args.field_res
+    return CFG
+
+
+def save_animation_html(animation, output_path):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(animation.to_jshtml(), encoding='utf-8')
+    return output_path
 
 
 class PerformanceMetrics:
@@ -207,11 +275,32 @@ def run_simulation():
     return animation
 
 
-def main():
-    from IPython.display import HTML, display
-
+def main(argv: Optional[Sequence[str]] = None):
+    args = parse_args(argv)
+    apply_runtime_options(args)
     animation = run_simulation()
-    display(HTML(animation.to_jshtml()))
+    output_path = save_animation_html(animation, args.output)
+
+    if args.show:
+        from IPython.display import HTML, display
+
+        display(HTML(output_path.read_text(encoding='utf-8')))
+
+    result = RunResult(
+        output_path=output_path,
+        frames=CFG.FRAMES,
+        agents=CFG.AGENTS,
+        field_res=CFG.FIELD_RES,
+        on_gpu=on_gpu,
+    )
+    print(
+        'Simulation complete. '
+        f'Frames: {result.frames}. Agents: {result.agents}. '
+        f'Field: {result.field_res}x{result.field_res}. '
+        f'Backend: {"GPU" if result.on_gpu else "CPU"}. '
+        f'Output: {result.output_path}'
+    )
+    return result
 
 
 if __name__ == '__main__':
