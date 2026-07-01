@@ -1,13 +1,15 @@
 import argparse
+import json
 import math
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
+import pandas as pd
 
-# GPU acceleration with fallback
 try:
     import cupy as cp
 
@@ -45,6 +47,22 @@ class CFG:
 CFG = CFG()
 rng = np.random.RandomState(CFG.SEED)
 DEFAULT_OUTPUT = Path('outputs/latest.html')
+DEFAULT_METRICS_DIR = Path('outputs')
+CHANNEL_NAMES = ('em_rf', 'optical_ir', 'consciousness_proxy', 'control_baseline')
+COVARIATE_NAMES = ('kp_index', 'lunar_phase', 'sidereal_time', 'xray_flux')
+
+SENSOR_ALIASES: Mapping[str, Tuple[str, ...]] = {
+    'em_rf': ('em_rf', 'electromagnetic_rf', 'magnetometer', 'magnetometer_noise', 'rf_noise', 'rf_spectrum_noise', 'channel_0'),
+    'optical_ir': ('optical_ir', 'optical_ir_anomaly', 'pixel_variance', 'sky_pixel_variance', 'ir_anomaly', 'channel_1'),
+    'consciousness_proxy': ('consciousness_proxy', 'reg_variance', 'reg_entropy', 'egg_variance', 'raw_entropy', 'entropy', 'channel_2'),
+}
+
+COVARIATE_ALIASES: Mapping[str, Tuple[str, ...]] = {
+    'kp_index': ('kp_index', 'kp', 'geomagnetic_kp', 'geomagnetic_index'),
+    'lunar_phase': ('lunar_phase', 'moon_phase', 'lunar_cycle_phase'),
+    'sidereal_time': ('sidereal_time', 'local_sidereal_time', 'lst'),
+    'xray_flux': ('xray_flux', 'solar_xray_flux', 'solar_flare_xray_flux'),
+}
 
 
 @dataclass
@@ -54,48 +72,58 @@ class RunResult:
     agents: int
     field_res: int
     on_gpu: bool
+    preset: str = 'synthetic'
+    metrics_path: Optional[Path] = None
+    metadata_path: Optional[Path] = None
+    calibration_threshold: Optional[float] = None
 
 
-def positive_int(raw):
+@dataclass
+class SimulationArtifacts:
+    animation: Any
+    recorder: Optional['LongitudinalMetricsRecorder'] = None
+    calibration_threshold: Optional[float] = None
+
+
+@dataclass
+class Observation:
+    values: Tuple[float, ...]
+    env_factor: float
+
+
+def positive_int(raw: str) -> int:
     value = int(raw)
     if value < 1:
         raise argparse.ArgumentTypeError('value must be a positive integer')
     return value
 
 
-def parse_args(argv: Optional[Sequence[str]] = None):
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Run the IONS-X Deep Emergence Lab simulation and save an HTML animation.'
     )
-    parser.add_argument(
-        '--quick',
-        action='store_true',
-        help='Use a smaller, faster configuration for first runs and demos.',
-    )
+    parser.add_argument('--quick', action='store_true', help='Use a smaller, faster configuration for first runs and demos.')
     parser.add_argument('--frames', type=positive_int, help='Number of animation frames to render.')
     parser.add_argument('--agents', type=positive_int, help='Number of autonomous agents to simulate.')
     parser.add_argument('--field-res', type=positive_int, dest='field_res', help='2D field resolution.')
     parser.add_argument(
-        '--output',
-        type=Path,
-        default=DEFAULT_OUTPUT,
-        help='HTML output path for the rendered animation.',
+        '--preset',
+        choices=('synthetic', 'baseline', 'empirical'),
+        default='synthetic',
+        help='Run mode: synthetic sandbox, baseline control calibration, or empirical CSV analysis.',
     )
-    parser.add_argument(
-        '--show',
-        action='store_true',
-        help='Also display the animation inline when running in an IPython notebook.',
-    )
+    parser.add_argument('--input-data', type=Path, help='CSV input file for empirical telemetry or baseline control calibration.')
+    parser.add_argument('--output', type=Path, default=DEFAULT_OUTPUT, help='HTML output path for the rendered animation.')
+    parser.add_argument('--show', action='store_true', help='Also display inline when running in an IPython notebook.')
     return parser.parse_args(argv)
 
 
-def apply_runtime_options(args):
+def apply_runtime_options(args: argparse.Namespace) -> CFG:
     if args.quick:
         CFG.FIELD_RES = 64
         CFG.AGENTS = 50
         CFG.FRAMES = 60
         CFG.SAMPLE_PER_FRAME = min(CFG.SAMPLE_PER_FRAME, 4)
-
     if args.frames is not None:
         CFG.FRAMES = args.frames
     if args.agents is not None:
@@ -105,48 +133,389 @@ def apply_runtime_options(args):
     return CFG
 
 
-def save_animation_html(animation, output_path):
+def save_animation_html(animation: Any, output_path: Path) -> Path:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(animation.to_jshtml(), encoding='utf-8')
     return output_path
 
 
-class PerformanceMetrics:
-    def __init__(self):
-        self.type_counts = defaultdict(int)
-        self.env_history = []
-        self.discovery_rate_history = []
-        self.coherence_frames = []
+def _canonical_lookup(columns: Sequence[str]) -> Dict[str, str]:
+    return {column.lower().strip(): column for column in columns}
 
-    def log_discovery(self, agent_type):
+
+def _find_column(df: pd.DataFrame, aliases: Sequence[str]) -> Optional[str]:
+    lookup = _canonical_lookup(df.columns)
+    for alias in aliases:
+        match = lookup.get(alias.lower())
+        if match is not None:
+            return match
+    return None
+
+
+def _filled_numeric_series(df: pd.DataFrame, aliases: Sequence[str], default: float = 0.0) -> pd.Series:
+    column = _find_column(df, aliases)
+    if column is None:
+        return pd.Series(default, index=df.index, dtype='float64')
+    numeric = pd.to_numeric(df[column], errors='coerce')
+    return numeric.ffill().bfill().fillna(default).astype('float64')
+
+
+def _filled_timestamps(df: pd.DataFrame) -> pd.Series:
+    column = _find_column(df, ('timestamp', 'time', 'datetime', 'date_time', 'utc_timestamp'))
+    if column is None:
+        return pd.Series(pd.date_range('1970-01-01', periods=len(df), freq='min', tz='UTC'))
+    timestamps = pd.to_datetime(df[column], errors='coerce', utc=True)
+    if timestamps.isna().all():
+        return pd.Series(pd.date_range('1970-01-01', periods=len(df), freq='min', tz='UTC'))
+    return timestamps.ffill().bfill()
+
+
+def _normalize_values(values: pd.Series) -> np.ndarray:
+    array = values.astype('float64').to_numpy()
+    std = float(np.std(array))
+    if std < 1e-12:
+        return np.zeros_like(array, dtype='float64')
+    return (array - float(np.mean(array))) / std
+
+
+def _spatial_bases(field_res: int) -> np.ndarray:
+    axis = np.linspace(-1.0, 1.0, field_res)
+    xx, yy = np.meshgrid(axis, axis, indexing='ij')
+    radial = np.exp(-3.0 * (xx**2 + yy**2))
+    return np.asarray(
+        [
+            np.sin(math.pi * xx) * np.cos(math.pi * yy),
+            np.cos(2.0 * math.pi * xx) + np.sin(math.pi * yy),
+            radial - radial.mean(),
+            np.sin(2.0 * math.pi * (xx + yy)),
+        ],
+        dtype='float32',
+    )
+
+@dataclass
+class TelemetryTargetField:
+    fields: np.ndarray
+    timestamps: pd.Series
+    raw_values: pd.DataFrame
+    covariates: pd.DataFrame
+    source: str = 'dataframe'
+
+    @classmethod
+    def from_csv(cls, input_path: Path, field_res: int, rng: np.random.RandomState) -> 'TelemetryTargetField':
+        input_path = Path(input_path)
+        if not input_path.exists():
+            raise FileNotFoundError(f'Input telemetry CSV not found: {input_path}')
+        return cls.from_dataframe(pd.read_csv(input_path), field_res=field_res, rng=rng, source=str(input_path))
+
+    @classmethod
+    def from_dataframe(
+        cls,
+        df: pd.DataFrame,
+        field_res: int,
+        rng: np.random.RandomState,
+        source: str = 'dataframe',
+    ) -> 'TelemetryTargetField':
+        if df.empty:
+            raise ValueError('Input telemetry data must contain at least one row.')
+
+        timestamps = _filled_timestamps(df).reset_index(drop=True)
+        raw_values = pd.DataFrame(index=range(len(df)))
+        for canonical, aliases in SENSOR_ALIASES.items():
+            raw_values[canonical] = _filled_numeric_series(df, aliases).reset_index(drop=True)
+        raw_values['control_baseline'] = rng.normal(0.0, 1.0, len(df))
+
+        covariates = pd.DataFrame(index=range(len(df)))
+        for canonical, aliases in COVARIATE_ALIASES.items():
+            covariates[canonical] = _filled_numeric_series(df, aliases).reset_index(drop=True)
+
+        fields = cls._map_to_grid(raw_values, field_res=field_res, rng=rng)
+        return cls(fields=fields, timestamps=timestamps, raw_values=raw_values, covariates=covariates, source=source)
+
+    @classmethod
+    def from_null_control(
+        cls,
+        frame_count: int,
+        field_res: int,
+        rng: np.random.RandomState,
+        source: str = 'generated-control-baseline',
+    ) -> 'TelemetryTargetField':
+        df = pd.DataFrame(
+            {
+                'timestamp': pd.date_range('1970-01-01', periods=frame_count, freq='min', tz='UTC'),
+                'em_rf': np.zeros(frame_count),
+                'optical_ir': np.zeros(frame_count),
+                'reg_variance': np.zeros(frame_count),
+            }
+        )
+        return cls.from_dataframe(df, field_res=field_res, rng=rng, source=source)
+
+    @staticmethod
+    def _map_to_grid(raw_values: pd.DataFrame, field_res: int, rng: np.random.RandomState) -> np.ndarray:
+        bases = _spatial_bases(field_res)
+        texture = rng.normal(0.0, 0.015, size=(len(CHANNEL_NAMES), field_res, field_res)).astype('float32')
+        fields = np.zeros((len(raw_values), len(CHANNEL_NAMES), field_res, field_res), dtype='float32')
+        for channel_index, channel_name in enumerate(CHANNEL_NAMES):
+            normalized = _normalize_values(raw_values[channel_name])
+            basis = bases[channel_index] + texture[channel_index]
+            for frame_index, value in enumerate(normalized):
+                fields[frame_index, channel_index] = (value * basis).astype('float32')
+        return fields
+
+    @property
+    def frame_count(self) -> int:
+        return int(self.fields.shape[0])
+
+    @property
+    def field_res(self) -> int:
+        return int(self.fields.shape[-1])
+
+    def field_for_frame(self, frame: int) -> np.ndarray:
+        index = min(max(frame, 0), self.frame_count - 1)
+        return self.fields[index]
+
+    def timestamp_for_frame(self, frame: int) -> pd.Timestamp:
+        index = min(max(frame, 0), self.frame_count - 1)
+        return pd.Timestamp(self.timestamps.iloc[index])
+
+    def covariates_for_frame(self, frame: int) -> Dict[str, float]:
+        index = min(max(frame, 0), self.frame_count - 1)
+        return {name: float(self.covariates.iloc[index][name]) for name in COVARIATE_NAMES}
+
+    def channel_series(self, channel_index: int) -> np.ndarray:
+        channel_name = CHANNEL_NAMES[channel_index]
+        return self.raw_values[channel_name].astype('float64').to_numpy()
+
+    def control_only_view(self, rng: np.random.RandomState) -> 'TelemetryTargetField':
+        null_target = TelemetryTargetField.from_null_control(
+            self.frame_count,
+            self.field_res,
+            rng=rng,
+            source=f'{self.source}:control-only',
+        )
+        fields = null_target.fields.copy()
+        fields[:, 3] = self.fields[:, 3]
+        raw_values = null_target.raw_values.copy()
+        raw_values['control_baseline'] = self.raw_values['control_baseline'].to_numpy()
+        return TelemetryTargetField(
+            fields=fields,
+            timestamps=self.timestamps.copy(),
+            raw_values=raw_values,
+            covariates=self.covariates.copy(),
+            source=f'{self.source}:control-only',
+        )
+
+    def reg_variance_deviation(self, frame: int, window: int = 50) -> float:
+        index = min(max(frame, 0), self.frame_count - 1)
+        start = max(0, index - window + 1)
+        series = self.raw_values['consciousness_proxy'].iloc[start : index + 1]
+        std = float(series.std(ddof=0))
+        if std < 1e-12:
+            return 0.0
+        return float((series.iloc[-1] - series.mean()) / std)
+
+    def sensor_anomaly_ratios(self, frame: int, short_window: int = 5, long_window: int = 50) -> Dict[str, float]:
+        index = min(max(frame, 0), self.frame_count - 1)
+        ratios: Dict[str, float] = {}
+        for channel in ('em_rf', 'optical_ir'):
+            short_start = max(0, index - short_window + 1)
+            long_start = max(0, index - long_window + 1)
+            short_mean = float(self.raw_values[channel].iloc[short_start : index + 1].abs().mean())
+            long_mean = float(self.raw_values[channel].iloc[long_start : index + 1].abs().mean())
+            ratios[f'{channel}_short_long'] = short_mean / max(long_mean, 1e-12)
+        return ratios
+
+class PerformanceMetrics:
+    def __init__(self) -> None:
+        self.type_counts: Dict[str, int] = defaultdict(int)
+        self.env_history: List[float] = []
+        self.discovery_rate_history: List[int] = []
+        self.coherence_frames: List[int] = []
+
+    def log_discovery(self, agent_type: str) -> None:
         self.type_counts[agent_type] += 1
 
-    def log_frame(self, frame, discoveries, env_factor, is_coherence):
+    def log_frame(self, frame: int, discoveries: int, env_factor: float, is_coherence: bool) -> None:
         self.env_history.append(env_factor)
         self.discovery_rate_history.append(discoveries)
         if is_coherence:
             self.coherence_frames.append(frame)
 
+    @property
+    def total_discoveries(self) -> int:
+        return int(sum(self.type_counts.values()))
+
 
 class EnvironmentalModerators:
-    def __init__(self):
-        self.coherence_events = []
+    def __init__(self) -> None:
+        self.coherence_events: List[int] = []
         self.m = 1.0
 
-    def update(self, t):
+    def update(self, t: int) -> None:
         self.m = 1.0 + 0.03 * math.sin(t / 31.8) + 0.02 * math.cos(t / 55.7)
         if rng.rand() < 0.02:
             self.coherence_events.append(t)
 
-    def get_modulation(self, t):
+    def get_modulation(self, t: int) -> float:
         return float(self.m * (1.3 if self.is_coherence_active(t) else 1.0))
 
-    def is_coherence_active(self, t):
+    def is_coherence_active(self, t: int) -> bool:
         return any(abs(t - ev) < 15 for ev in self.coherence_events)
 
+    @property
+    def discovery_threshold(self) -> float:
+        return float(CFG.DISCOVER_THRESH)
 
-def evolve_fields(F, t, env_factor, env_mod):
+    @property
+    def confidence_decay(self) -> float:
+        return float(CFG.CONFIDENCE_DECAY)
+
+    def snapshot(self) -> Dict[str, float]:
+        return {'coherence_factor': float(self.m)}
+
+
+class RealWorldModerator:
+    def __init__(self, base_threshold: float, base_decay: float, base_window: int) -> None:
+        self.base_threshold = float(base_threshold)
+        self.base_decay = float(base_decay)
+        self.base_window = int(base_window)
+        self.coherence_events: List[int] = []
+        self.coherence_window = int(base_window)
+        self.m = 1.0
+        self.discovery_threshold = float(base_threshold)
+        self.confidence_decay = float(base_decay)
+        self.current_covariates = {name: 0.0 for name in COVARIATE_NAMES}
+
+    def update(self, t: int, covariates: Mapping[str, float]) -> None:
+        self.current_covariates = {name: float(covariates.get(name, 0.0) or 0.0) for name in COVARIATE_NAMES}
+        kp_pressure = np.clip(self.current_covariates['kp_index'] / 9.0, 0.0, 1.0)
+        lunar_phase = self.current_covariates['lunar_phase'] % 1.0
+        lunar_alignment = 0.5 + 0.5 * math.cos(2.0 * math.pi * lunar_phase)
+        sidereal = (self.current_covariates['sidereal_time'] % 24.0) / 24.0
+        sidereal_alignment = 0.5 + 0.5 * math.sin(2.0 * math.pi * sidereal)
+        xray_flux = max(abs(self.current_covariates['xray_flux']), 1e-12)
+        flare_pressure = np.clip((math.log10(xray_flux) + 8.0) / 3.0, 0.0, 1.0)
+        pressure = (
+            0.35 * float(kp_pressure)
+            + 0.20 * float(lunar_alignment)
+            + 0.15 * float(sidereal_alignment)
+            + 0.30 * float(flare_pressure)
+        )
+        self.m = float(1.0 + 0.55 * pressure)
+        self.discovery_threshold = float(max(0.05, self.base_threshold / self.m))
+        self.confidence_decay = float(max(0.90, self.base_decay - (self.m - 1.0) * 0.025))
+        self.coherence_window = int(round(self.base_window * (1.0 + 0.75 * pressure)))
+        if pressure >= 0.35 or not self.coherence_events:
+            self.coherence_events.append(t)
+
+    def get_modulation(self, t: int) -> float:
+        return float(self.m * (1.15 if self.is_coherence_active(t) else 1.0))
+
+    def is_coherence_active(self, t: int) -> bool:
+        return any(abs(t - ev) <= self.coherence_window for ev in self.coherence_events)
+
+    def snapshot(self) -> Dict[str, float]:
+        values = dict(self.current_covariates)
+        values.update(
+            {
+                'coherence_factor': float(self.m),
+                'discovery_threshold': float(self.discovery_threshold),
+                'confidence_decay': float(self.confidence_decay),
+                'coherence_window': float(self.coherence_window),
+            }
+        )
+        return values
+
+
+class Agent:
+    def __init__(self, aid: int, atype: str) -> None:
+        self.id = aid
+        self.type = atype
+        self.memory: List[Observation] = []
+        self.pos = rng.randint(0, CFG.FIELD_RES, size=2)
+
+    def observe(self, obs: Observation) -> None:
+        self.memory.append(obs)
+        if len(self.memory) > CFG.MEMORY:
+            self.memory.pop(0)
+
+    def discover(self, threshold: Optional[float] = None) -> List[Dict[str, Any]]:
+        threshold = CFG.DISCOVER_THRESH if threshold is None else threshold
+        if len(self.memory) < CFG.CORR_WINDOW:
+            return []
+        data = np.array([o.values for o in self.memory[-CFG.CORR_WINDOW :]], dtype='float64')
+        discs: List[Dict[str, Any]] = []
+        for i in range(CFG.CHANNELS):
+            for j in range(i + 1, CFG.CHANNELS):
+                r = float(np.corrcoef(data[:, i], data[:, j])[0, 1])
+                if math.isnan(r):
+                    continue
+                if abs(r) > threshold:
+                    discs.append({'edge': (f'ch{i}', f'ch{j}'), 'pearson_r': r, 'confidence': abs(r), 'operator_type': self.type})
+        return discs
+
+class LongitudinalMetricsRecorder:
+    def __init__(self, output_dir: Path = DEFAULT_METRICS_DIR, run_id: Optional[str] = None) -> None:
+        self.output_dir = Path(output_dir)
+        self.run_id = run_id or datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        self.rows: List[Dict[str, Any]] = []
+
+    def log_frame(
+        self,
+        frame: int,
+        timestamp: pd.Timestamp,
+        discoveries: Sequence[Mapping[str, Any]],
+        moderator_values: Mapping[str, float],
+        operator_density: float,
+        total_discoveries: int,
+        reg_variance_deviation: float,
+        sensor_anomaly_ratios: Mapping[str, float],
+    ) -> None:
+        base_row = {
+            'Frame': int(frame),
+            'Timestamp': pd.Timestamp(timestamp).isoformat(),
+            'Active_Moderator_Values': json.dumps(dict(moderator_values), sort_keys=True),
+            'Operator_Density': float(operator_density),
+            'Total_Cumulative_Discoveries': int(total_discoveries),
+            'REG_Variance_Deviation': float(reg_variance_deviation),
+            'Sensor_Anomaly_MultiScale_Ratios': json.dumps(dict(sensor_anomaly_ratios), sort_keys=True),
+        }
+        if not discoveries:
+            self.rows.append({**base_row, 'Channel_A': '', 'Channel_B': '', 'Pearson_R': np.nan, 'Confidence_Score': 0.0, 'Operator_Type': ''})
+            return
+        for discovery in discoveries:
+            channel_a, channel_b = discovery['edge']
+            self.rows.append(
+                {
+                    **base_row,
+                    'Channel_A': channel_a,
+                    'Channel_B': channel_b,
+                    'Pearson_R': float(discovery.get('pearson_r', discovery.get('confidence', 0.0))),
+                    'Confidence_Score': float(discovery.get('confidence', 0.0)),
+                    'Operator_Type': str(discovery.get('operator_type', '')),
+                }
+            )
+
+    def dataframe(self) -> pd.DataFrame:
+        return pd.DataFrame(self.rows)
+
+    def save_summary(self, metadata: Mapping[str, Any]) -> Tuple[Path, Path]:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = self.output_dir / f'longitudinal_run_{self.run_id}.csv.gz'
+        metadata_path = self.output_dir / f'metadata_{self.run_id}.json'
+        dataframe = self.dataframe()
+        dataframe.to_csv(csv_path, index=False, compression='gzip')
+        summary = {
+            **dict(metadata),
+            'row_count': int(len(dataframe)),
+            'discovery_rows': int((dataframe.get('Confidence_Score', pd.Series(dtype=float)) > 0).sum()),
+            'csv_path': str(csv_path),
+        }
+        metadata_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+        return csv_path, metadata_path
+
+
+def evolve_fields(F: Any, t: int, env_factor: float, env_mod: EnvironmentalModerators) -> Any:
     Fk = fft_rfft(F)
     for ci in range(F.shape[0]):
         Fk[ci] *= xp.exp(
@@ -165,54 +534,56 @@ def evolve_fields(F, t, env_factor, env_mod):
     return 0.92 * F + 0.08 * xp.tanh(F * 4.0)
 
 
-@dataclass
-class Observation:
-    values: Tuple[float, ...]
-    env_factor: float
-
-
-class Agent:
-    def __init__(self, aid, atype):
-        self.id = aid
-        self.type = atype
-        self.memory = []
-        self.pos = rng.randint(0, CFG.FIELD_RES, size=2)
-
-    def observe(self, obs):
-        self.memory.append(obs)
-        if len(self.memory) > CFG.MEMORY:
-            self.memory.pop(0)
-
-    def discover(self):
-        if len(self.memory) < CFG.CORR_WINDOW:
-            return []
-
-        data = np.array([o.values for o in self.memory[-CFG.CORR_WINDOW :]])
-        discs = []
-        for i in range(CFG.CHANNELS):
-            for j in range(i + 1, CFG.CHANNELS):
-                r = np.corrcoef(data[:, i], data[:, j])[0, 1]
-                if abs(r) > CFG.DISCOVER_THRESH:
-                    discs.append({'edge': (f'ch{i}', f'ch{j}'), 'confidence': abs(r)})
-        return discs
-
-
-def build_simulation_state():
+def build_simulation_state(target_field: Optional[TelemetryTargetField] = None) -> Tuple[List[Agent], Any, Dict[str, float], PerformanceMetrics, Any, Any]:
     import networkx as nx
 
     agents = [Agent(i, CFG.AGENT_TYPES[i % 3]) for i in range(CFG.AGENTS)]
     graph = nx.DiGraph()
-    conf_map = defaultdict(float)
+    conf_map: Dict[str, float] = defaultdict(float)
     metrics = PerformanceMetrics()
-    env_mod = EnvironmentalModerators()
-    F = xp.asarray(
-        rng.normal(0, 0.02, (CFG.CHANNELS, CFG.FIELD_RES, CFG.FIELD_RES)),
-        dtype=xp.float32,
-    )
+    if target_field is None:
+        env_mod: Any = EnvironmentalModerators()
+        F = xp.asarray(rng.normal(0, 0.02, (CFG.CHANNELS, CFG.FIELD_RES, CFG.FIELD_RES)), dtype=xp.float32)
+    else:
+        env_mod = RealWorldModerator(base_threshold=CFG.DISCOVER_THRESH, base_decay=CFG.CONFIDENCE_DECAY, base_window=15)
+        F = xp.asarray(target_field.field_for_frame(0), dtype=xp.float32)
     return agents, graph, conf_map, metrics, env_mod, F
 
 
-def run_simulation():
+def calibrate_control_threshold(target_field: TelemetryTargetField, corr_window: int, confidence: float = 0.95) -> float:
+    if target_field.frame_count < max(3, corr_window):
+        return float(CFG.DISCOVER_THRESH)
+    control = target_field.channel_series(3)
+    historic_null = np.roll(control, max(1, corr_window // 2))
+    correlations: List[float] = []
+    for end in range(corr_window, len(control) + 1):
+        left = control[end - corr_window : end]
+        right = historic_null[end - corr_window : end]
+        r = float(np.corrcoef(left, right)[0, 1])
+        if not math.isnan(r):
+            correlations.append(abs(r))
+    if not correlations:
+        return float(CFG.DISCOVER_THRESH)
+    return float(np.clip(np.quantile(correlations, confidence), 0.05, 0.99))
+
+
+def _synthetic_reg_deviation(F_cpu: np.ndarray) -> float:
+    return float(np.std(F_cpu[2]))
+
+
+def _synthetic_sensor_ratios(F_cpu: np.ndarray) -> Dict[str, float]:
+    baseline = max(float(np.mean(np.abs(F_cpu[3]))), 1e-12)
+    return {
+        'em_rf_short_long': float(np.mean(np.abs(F_cpu[0])) / baseline),
+        'optical_ir_short_long': float(np.mean(np.abs(F_cpu[1])) / baseline),
+    }
+
+def run_simulation(
+    target_field: Optional[TelemetryTargetField] = None,
+    preset: str = 'synthetic',
+    recorder: Optional[LongitudinalMetricsRecorder] = None,
+    calibrated_threshold: Optional[float] = None,
+) -> SimulationArtifacts:
     import matplotlib.gridspec as gridspec
     import matplotlib.pyplot as plt
     import networkx as nx
@@ -226,60 +597,151 @@ def run_simulation():
     ax_field = fig.add_subplot(gs[0, 0])
     ax_stats = fig.add_subplot(gs[1, 0])
 
-    agents, graph, conf_map, metrics, env_mod, F = build_simulation_state()
+    agents, graph, conf_map, metrics, env_mod, F = build_simulation_state(target_field)
+    frames_to_render = CFG.FRAMES if target_field is None else min(CFG.FRAMES, target_field.frame_count)
 
-    def update(frame):
+    def update(frame: int) -> None:
         nonlocal F
 
-        env_mod.update(frame)
-        modulation = env_mod.get_modulation(frame)
-        F = evolve_fields(F, frame, modulation, env_mod)
-        F_cpu = cp.asnumpy(F) if on_gpu else F
+        if target_field is None:
+            env_mod.update(frame)
+            modulation = env_mod.get_modulation(frame)
+            threshold = calibrated_threshold or env_mod.discovery_threshold
+            confidence_decay = env_mod.confidence_decay
+            F = evolve_fields(F, frame, modulation, env_mod)
+            F_cpu = cp.asnumpy(F) if on_gpu else F
+            timestamp = pd.Timestamp('1970-01-01', tz='UTC') + pd.Timedelta(minutes=frame)
+            moderator_values = env_mod.snapshot()
+            reg_deviation = _synthetic_reg_deviation(F_cpu)
+            sensor_ratios = _synthetic_sensor_ratios(F_cpu)
+        else:
+            F_cpu = target_field.field_for_frame(frame)
+            F = xp.asarray(F_cpu, dtype=xp.float32)
+            covariates = target_field.covariates_for_frame(frame)
+            env_mod.update(frame, covariates)
+            modulation = env_mod.get_modulation(frame)
+            threshold = calibrated_threshold or env_mod.discovery_threshold
+            confidence_decay = env_mod.confidence_decay
+            timestamp = target_field.timestamp_for_frame(frame)
+            moderator_values = env_mod.snapshot()
+            reg_deviation = target_field.reg_variance_deviation(frame, CFG.CORR_WINDOW)
+            sensor_ratios = target_field.sensor_anomaly_ratios(frame)
 
-        count = 0
+        frame_discoveries: List[Dict[str, Any]] = []
         for agent in agents:
-            agent.pos = (agent.pos + rng.randint(-3, 4, 2)) % CFG.FIELD_RES
-            agent.observe(Observation(tuple(F_cpu[:, agent.pos[0], agent.pos[1]]), modulation))
-            for discovery in agent.discover():
+            agent.pos = (agent.pos + rng.randint(-CFG.STEP_SIZE, CFG.STEP_SIZE + 1, 2)) % CFG.FIELD_RES
+            values = tuple(float(v) for v in F_cpu[:, agent.pos[0], agent.pos[1]])
+            agent.observe(Observation(values=values, env_factor=modulation))
+            for discovery in agent.discover(threshold=threshold):
                 u, v = discovery['edge']
                 key = f'{u}->{v}'
                 conf_map[key] = max(conf_map[key], discovery['confidence'])
                 graph.add_edge(u, v, weight=conf_map[key])
                 metrics.log_discovery(agent.type)
-                count += 1
+                frame_discoveries.append(discovery)
 
         for key in list(conf_map.keys()):
-            conf_map[key] *= CFG.CONFIDENCE_DECAY
+            conf_map[key] *= confidence_decay
             if conf_map[key] < 0.05:
                 u, v = key.split('->')
-                graph.remove_edge(u, v)
+                if graph.has_edge(u, v):
+                    graph.remove_edge(u, v)
                 del conf_map[key]
 
-        metrics.log_frame(frame, count, modulation, env_mod.is_coherence_active(frame))
+        metrics.log_frame(frame, len(frame_discoveries), modulation, env_mod.is_coherence_active(frame))
+        operator_density = len(agents) / float(CFG.FIELD_RES * CFG.FIELD_RES)
+        if recorder is not None:
+            recorder.log_frame(
+                frame=frame,
+                timestamp=timestamp,
+                discoveries=frame_discoveries,
+                moderator_values=moderator_values,
+                operator_density=operator_density,
+                total_discoveries=metrics.total_discoveries,
+                reg_variance_deviation=reg_deviation,
+                sensor_anomaly_ratios=sensor_ratios,
+            )
+
         ax_field.clear()
         ax_field.imshow(F_cpu[0], cmap='magma')
+        ax_field.set_title('Channel 0: EM/RF Telemetry')
         ax_field.axis('off')
 
         ax_graph.clear()
         nx.draw(graph, ax=ax_graph, with_labels=True, node_color='orange', edge_color='cyan')
+        ax_graph.set_title('Emergent ATOM Discoveries')
 
         ax_stats.clear()
+        ax_stats.axis('off')
         ax_stats.text(
-            0.1,
-            0.5,
-            f"Discoveries: {sum(metrics.type_counts.values())}\nM-Factor: {modulation:.3f}",
+            0.05,
+            0.75,
+            (
+                f'Total Cumulative Discoveries: {metrics.total_discoveries}\n'
+                f'Active Environmental Coherence Factor: {modulation:.3f}\n'
+                f'REG Variance Deviation: {reg_deviation:.3f}\n'
+                'Sensor Anomaly Multi-scale Ratios:\n'
+                f"  EM/RF: {sensor_ratios['em_rf_short_long']:.3f}\n"
+                f"  Optical/IR: {sensor_ratios['optical_ir_short_long']:.3f}"
+            ),
             fontsize=12,
+            va='top',
         )
+        ax_stats.set_title(f'Run Stats ({preset})')
 
-    animation = FuncAnimation(fig, update, frames=CFG.FRAMES, interval=50, repeat=False)
-    return animation
+    animation = FuncAnimation(fig, update, frames=frames_to_render, interval=50, repeat=False)
+    return SimulationArtifacts(animation=animation, recorder=recorder, calibration_threshold=calibrated_threshold)
+
+def _prepare_target_and_threshold(args: argparse.Namespace) -> Tuple[Optional[TelemetryTargetField], Optional[float]]:
+    if args.preset == 'synthetic':
+        if args.input_data is not None:
+            return TelemetryTargetField.from_csv(args.input_data, CFG.FIELD_RES, rng), None
+        return None, None
+
+    if args.input_data is not None:
+        target = TelemetryTargetField.from_csv(args.input_data, CFG.FIELD_RES, rng)
+    elif args.preset == 'baseline':
+        target = TelemetryTargetField.from_null_control(CFG.FRAMES, CFG.FIELD_RES, rng)
+    else:
+        raise ValueError('--preset empirical requires --input-data PATH')
+
+    if args.frames is None:
+        CFG.FRAMES = target.frame_count
+
+    if args.preset == 'baseline':
+        threshold = calibrate_control_threshold(target, CFG.CORR_WINDOW, confidence=0.95)
+        return target.control_only_view(rng), threshold
+    return target, None
 
 
-def main(argv: Optional[Sequence[str]] = None):
+def main(argv: Optional[Sequence[str]] = None) -> RunResult:
     args = parse_args(argv)
     apply_runtime_options(args)
-    animation = run_simulation()
-    output_path = save_animation_html(animation, args.output)
+    target_field, calibration_threshold = _prepare_target_and_threshold(args)
+    recorder = LongitudinalMetricsRecorder() if args.preset in {'baseline', 'empirical'} else None
+
+    artifacts = run_simulation(
+        target_field=target_field,
+        preset=args.preset,
+        recorder=recorder,
+        calibrated_threshold=calibration_threshold,
+    )
+    output_path = save_animation_html(artifacts.animation, args.output)
+
+    metrics_path: Optional[Path] = None
+    metadata_path: Optional[Path] = None
+    if artifacts.recorder is not None:
+        metadata = {
+            'preset': args.preset,
+            'frames': CFG.FRAMES,
+            'agents': CFG.AGENTS,
+            'field_res': CFG.FIELD_RES,
+            'source': target_field.source if target_field is not None else 'synthetic',
+            'calibration_threshold': artifacts.calibration_threshold,
+            'channel_schema': list(CHANNEL_NAMES),
+            'covariate_schema': list(COVARIATE_NAMES),
+        }
+        metrics_path, metadata_path = artifacts.recorder.save_summary(metadata)
 
     if args.show:
         from IPython.display import HTML, display
@@ -292,14 +754,21 @@ def main(argv: Optional[Sequence[str]] = None):
         agents=CFG.AGENTS,
         field_res=CFG.FIELD_RES,
         on_gpu=on_gpu,
+        preset=args.preset,
+        metrics_path=metrics_path,
+        metadata_path=metadata_path,
+        calibration_threshold=artifacts.calibration_threshold,
     )
-    print(
+    message = (
         'Simulation complete. '
-        f'Frames: {result.frames}. Agents: {result.agents}. '
+        f'Preset: {result.preset}. Frames: {result.frames}. Agents: {result.agents}. '
         f'Field: {result.field_res}x{result.field_res}. '
         f'Backend: {"GPU" if result.on_gpu else "CPU"}. '
         f'Output: {result.output_path}'
     )
+    if result.metrics_path is not None:
+        message += f'. Metrics: {result.metrics_path}. Metadata: {result.metadata_path}'
+    print(message)
     return result
 
 

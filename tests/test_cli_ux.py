@@ -44,6 +44,18 @@ def test_parse_args_accepts_quick_mode_and_output_path():
     assert args.output == Path('outputs/demo.html')
 
 
+def test_parse_args_accepts_longitudinal_presets_and_input_data():
+    sim = load_module()
+
+    args = sim.parse_args([
+        '--preset', 'empirical',
+        '--input-data', 'continuous_telemetry.csv',
+    ])
+
+    assert args.preset == 'empirical'
+    assert args.input_data == Path('continuous_telemetry.csv')
+
+
 def test_quick_mode_and_overrides_update_runtime_config():
     sim = load_module()
     original = snapshot_cfg(sim)
@@ -70,9 +82,9 @@ def test_main_writes_html_output_without_running_full_simulation(tmp_path):
         def to_jshtml(self):
             return '<section>IONS-X demo animation</section>'
 
-    def fake_run_simulation():
+    def fake_run_simulation(**kwargs):
         calls.append((sim.CFG.FRAMES, sim.CFG.AGENTS, sim.CFG.FIELD_RES))
-        return FakeAnimation()
+        return sim.SimulationArtifacts(animation=FakeAnimation())
 
     try:
         sim.run_simulation = fake_run_simulation
@@ -82,6 +94,7 @@ def test_main_writes_html_output_without_running_full_simulation(tmp_path):
             '--frames', '2',
             '--agents', '3',
             '--field-res', '16',
+            '--preset', 'baseline',
             '--output', str(output_path),
         ])
 
@@ -91,5 +104,7 @@ def test_main_writes_html_output_without_running_full_simulation(tmp_path):
         assert result.frames == 2
         assert result.agents == 3
         assert result.field_res == 16
+        assert result.preset == 'baseline'
+        assert result.metrics_path is None
     finally:
         restore_cfg(sim, original)
