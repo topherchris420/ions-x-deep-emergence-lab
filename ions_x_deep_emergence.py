@@ -2,10 +2,11 @@ import argparse
 import json
 import math
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -48,16 +49,49 @@ CFG = CFG()
 rng = np.random.RandomState(CFG.SEED)
 DEFAULT_OUTPUT = Path('outputs/latest.html')
 DEFAULT_METRICS_DIR = Path('outputs')
+DEFAULT_GIF_FPS = 20
+
+# Named experiment bundles. Each maps CFG attribute -> value and is applied
+# before --quick and before any explicit numeric flags, so command-line
+# overrides always win. 'balanced' is the documented default (empty = ship CFG).
+EXPERIMENTS: Mapping[str, Mapping[str, Any]] = {
+    'balanced': {},
+    'quick': {'FIELD_RES': 64, 'AGENTS': 50, 'FRAMES': 60, 'SAMPLE_PER_FRAME': 4},
+    # Associative-remote-viewing style: patient operators reading against
+    # long temporal displacement, so widen memory, lag, and the correlation
+    # window while lowering the discovery bar for weak, lagged structure.
+    'arv': {
+        'LAG_FRAMES': [15, 30, 60, 120],
+        'MEMORY': 500,
+        'CORR_WINDOW': 80,
+        'DISCOVER_THRESH': 0.28,
+        'FRAMES': 400,
+    },
+    # Emphasize environmental coherence windows: slower confidence decay and a
+    # lower threshold let coherence-boosted structure accumulate and persist.
+    'coherence': {
+        'DISCOVER_THRESH': 0.26,
+        'CONFIDENCE_DECAY': 0.997,
+        'AGENTS': 400,
+        'FRAMES': 300,
+    },
+    # Saturate the field with operators to study crowding and density effects.
+    'dense-agents': {
+        'AGENTS': 800,
+        'FIELD_RES': 96,
+        'FRAMES': 200,
+    },
+}
 CHANNEL_NAMES = ('em_rf', 'optical_ir', 'consciousness_proxy', 'control_baseline')
 COVARIATE_NAMES = ('kp_index', 'lunar_phase', 'sidereal_time', 'xray_flux')
 
-SENSOR_ALIASES: Mapping[str, Tuple[str, ...]] = {
+SENSOR_ALIASES: Mapping[str, tuple[str, ...]] = {
     'em_rf': ('em_rf', 'electromagnetic_rf', 'magnetometer', 'magnetometer_noise', 'rf_noise', 'rf_spectrum_noise', 'channel_0'),
     'optical_ir': ('optical_ir', 'optical_ir_anomaly', 'pixel_variance', 'sky_pixel_variance', 'ir_anomaly', 'channel_1'),
     'consciousness_proxy': ('consciousness_proxy', 'reg_variance', 'reg_entropy', 'egg_variance', 'raw_entropy', 'entropy', 'channel_2'),
 }
 
-COVARIATE_ALIASES: Mapping[str, Tuple[str, ...]] = {
+COVARIATE_ALIASES: Mapping[str, tuple[str, ...]] = {
     'kp_index': ('kp_index', 'kp', 'geomagnetic_kp', 'geomagnetic_index'),
     'lunar_phase': ('lunar_phase', 'moon_phase', 'lunar_cycle_phase'),
     'sidereal_time': ('sidereal_time', 'local_sidereal_time', 'lst'),
@@ -73,21 +107,24 @@ class RunResult:
     field_res: int
     on_gpu: bool
     preset: str = 'synthetic'
-    metrics_path: Optional[Path] = None
-    metadata_path: Optional[Path] = None
-    calibration_threshold: Optional[float] = None
+    experiment: str = 'balanced'
+    metrics_path: Path | None = None
+    metadata_path: Path | None = None
+    summary_path: Path | None = None
+    calibration_threshold: float | None = None
 
 
 @dataclass
 class SimulationArtifacts:
     animation: Any
     recorder: Optional['LongitudinalMetricsRecorder'] = None
-    calibration_threshold: Optional[float] = None
+    calibration_threshold: float | None = None
+    metrics: Optional['PerformanceMetrics'] = None
 
 
 @dataclass
 class Observation:
-    values: Tuple[float, ...]
+    values: tuple[float, ...]
     env_factor: float
 
 
@@ -98,11 +135,16 @@ def positive_int(raw: str) -> int:
     return value
 
 
-def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='Run the IONS-X Deep Emergence Lab simulation and save an HTML animation.'
     )
     parser.add_argument('--quick', action='store_true', help='Use a smaller, faster configuration for first runs and demos.')
+    parser.add_argument(
+        '--experiment',
+        choices=tuple(EXPERIMENTS),
+        help='Named parameter bundle to start from (see README). Explicit flags below still override it.',
+    )
     parser.add_argument('--frames', type=positive_int, help='Number of animation frames to render.')
     parser.add_argument('--agents', type=positive_int, help='Number of autonomous agents to simulate.')
     parser.add_argument('--field-res', type=positive_int, dest='field_res', help='2D field resolution.')
@@ -113,12 +155,35 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help='Run mode: synthetic sandbox, baseline control calibration, or empirical CSV analysis.',
     )
     parser.add_argument('--input-data', type=Path, help='CSV input file for empirical telemetry or baseline control calibration.')
-    parser.add_argument('--output', type=Path, default=DEFAULT_OUTPUT, help='HTML output path for the rendered animation.')
+    parser.add_argument(
+        '--output',
+        type=Path,
+        default=DEFAULT_OUTPUT,
+        help='Output path. Use a .html suffix for an interactive animation or .gif for a shareable clip.',
+    )
+    parser.add_argument('--fps', type=positive_int, default=DEFAULT_GIF_FPS, help='Frames per second when writing a .gif output.')
+    parser.add_argument(
+        '--no-metrics-sidecar',
+        action='store_true',
+        help='Do not write the <output>.metrics.json summary next to the animation.',
+    )
     parser.add_argument('--show', action='store_true', help='Also display inline when running in an IPython notebook.')
     return parser.parse_args(argv)
 
 
+def apply_experiment(name: str | None) -> None:
+    """Apply a named experiment bundle onto the global CFG in place."""
+    if not name:
+        return
+    if name not in EXPERIMENTS:
+        raise ValueError(f'Unknown experiment {name!r}; choose from {sorted(EXPERIMENTS)}.')
+    for key, value in EXPERIMENTS[name].items():
+        setattr(CFG, key, value)
+
+
 def apply_runtime_options(args: argparse.Namespace) -> CFG:
+    # Precedence, lowest to highest: experiment bundle -> --quick -> explicit flags.
+    apply_experiment(getattr(args, 'experiment', None))
     if args.quick:
         CFG.FIELD_RES = 64
         CFG.AGENTS = 50
@@ -133,18 +198,33 @@ def apply_runtime_options(args: argparse.Namespace) -> CFG:
     return CFG
 
 
-def save_animation_html(animation: Any, output_path: Path) -> Path:
+def save_animation(animation: Any, output_path: Path, fps: int = DEFAULT_GIF_FPS) -> Path:
+    """Render the animation to ``output_path``.
+
+    A ``.gif`` suffix writes a shareable clip via Pillow; anything else writes a
+    self-contained interactive HTML animation. Both drive the same frame updates,
+    so metrics are fully populated afterward either way.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(animation.to_jshtml(), encoding='utf-8')
+    if output_path.suffix.lower() == '.gif':
+        from matplotlib.animation import PillowWriter
+
+        animation.save(str(output_path), writer=PillowWriter(fps=fps))
+    else:
+        output_path.write_text(animation.to_jshtml(), encoding='utf-8')
     return output_path
 
 
-def _canonical_lookup(columns: Sequence[str]) -> Dict[str, str]:
+# Backward-compatible alias for callers that imported the original name.
+save_animation_html = save_animation
+
+
+def _canonical_lookup(columns: Sequence[str]) -> dict[str, str]:
     return {column.lower().strip(): column for column in columns}
 
 
-def _find_column(df: pd.DataFrame, aliases: Sequence[str]) -> Optional[str]:
+def _find_column(df: pd.DataFrame, aliases: Sequence[str]) -> str | None:
     lookup = _canonical_lookup(df.columns)
     for alias in aliases:
         match = lookup.get(alias.lower())
@@ -278,7 +358,7 @@ class TelemetryTargetField:
         index = min(max(frame, 0), self.frame_count - 1)
         return pd.Timestamp(self.timestamps.iloc[index])
 
-    def covariates_for_frame(self, frame: int) -> Dict[str, float]:
+    def covariates_for_frame(self, frame: int) -> dict[str, float]:
         index = min(max(frame, 0), self.frame_count - 1)
         return {name: float(self.covariates.iloc[index][name]) for name in COVARIATE_NAMES}
 
@@ -314,9 +394,9 @@ class TelemetryTargetField:
             return 0.0
         return float((series.iloc[-1] - series.mean()) / std)
 
-    def sensor_anomaly_ratios(self, frame: int, short_window: int = 5, long_window: int = 50) -> Dict[str, float]:
+    def sensor_anomaly_ratios(self, frame: int, short_window: int = 5, long_window: int = 50) -> dict[str, float]:
         index = min(max(frame, 0), self.frame_count - 1)
-        ratios: Dict[str, float] = {}
+        ratios: dict[str, float] = {}
         for channel in ('em_rf', 'optical_ir'):
             short_start = max(0, index - short_window + 1)
             long_start = max(0, index - long_window + 1)
@@ -327,10 +407,10 @@ class TelemetryTargetField:
 
 class PerformanceMetrics:
     def __init__(self) -> None:
-        self.type_counts: Dict[str, int] = defaultdict(int)
-        self.env_history: List[float] = []
-        self.discovery_rate_history: List[int] = []
-        self.coherence_frames: List[int] = []
+        self.type_counts: dict[str, int] = defaultdict(int)
+        self.env_history: list[float] = []
+        self.discovery_rate_history: list[int] = []
+        self.coherence_frames: list[int] = []
 
     def log_discovery(self, agent_type: str) -> None:
         self.type_counts[agent_type] += 1
@@ -348,7 +428,7 @@ class PerformanceMetrics:
 
 class EnvironmentalModerators:
     def __init__(self) -> None:
-        self.coherence_events: List[int] = []
+        self.coherence_events: list[int] = []
         self.m = 1.0
 
     def update(self, t: int) -> None:
@@ -370,7 +450,7 @@ class EnvironmentalModerators:
     def confidence_decay(self) -> float:
         return float(CFG.CONFIDENCE_DECAY)
 
-    def snapshot(self) -> Dict[str, float]:
+    def snapshot(self) -> dict[str, float]:
         return {'coherence_factor': float(self.m)}
 
 
@@ -379,12 +459,12 @@ class RealWorldModerator:
         self.base_threshold = float(base_threshold)
         self.base_decay = float(base_decay)
         self.base_window = int(base_window)
-        self.coherence_events: List[int] = []
+        self.coherence_events: list[int] = []
         self.coherence_window = int(base_window)
         self.m = 1.0
         self.discovery_threshold = float(base_threshold)
         self.confidence_decay = float(base_decay)
-        self.current_covariates = {name: 0.0 for name in COVARIATE_NAMES}
+        self.current_covariates = dict.fromkeys(COVARIATE_NAMES, 0.0)
 
     def update(self, t: int, covariates: Mapping[str, float]) -> None:
         self.current_covariates = {name: float(covariates.get(name, 0.0) or 0.0) for name in COVARIATE_NAMES}
@@ -414,7 +494,7 @@ class RealWorldModerator:
     def is_coherence_active(self, t: int) -> bool:
         return any(abs(t - ev) <= self.coherence_window for ev in self.coherence_events)
 
-    def snapshot(self) -> Dict[str, float]:
+    def snapshot(self) -> dict[str, float]:
         values = dict(self.current_covariates)
         values.update(
             {
@@ -431,7 +511,7 @@ class Agent:
     def __init__(self, aid: int, atype: str) -> None:
         self.id = aid
         self.type = atype
-        self.memory: List[Observation] = []
+        self.memory: list[Observation] = []
         self.pos = rng.randint(0, CFG.FIELD_RES, size=2)
 
     def observe(self, obs: Observation) -> None:
@@ -439,12 +519,12 @@ class Agent:
         if len(self.memory) > CFG.MEMORY:
             self.memory.pop(0)
 
-    def discover(self, threshold: Optional[float] = None) -> List[Dict[str, Any]]:
+    def discover(self, threshold: float | None = None) -> list[dict[str, Any]]:
         threshold = CFG.DISCOVER_THRESH if threshold is None else threshold
         if len(self.memory) < CFG.CORR_WINDOW:
             return []
         data = np.array([o.values for o in self.memory[-CFG.CORR_WINDOW :]], dtype='float64')
-        discs: List[Dict[str, Any]] = []
+        discs: list[dict[str, Any]] = []
         for i in range(CFG.CHANNELS):
             for j in range(i + 1, CFG.CHANNELS):
                 r = float(np.corrcoef(data[:, i], data[:, j])[0, 1])
@@ -455,10 +535,10 @@ class Agent:
         return discs
 
 class LongitudinalMetricsRecorder:
-    def __init__(self, output_dir: Path = DEFAULT_METRICS_DIR, run_id: Optional[str] = None) -> None:
+    def __init__(self, output_dir: Path = DEFAULT_METRICS_DIR, run_id: str | None = None) -> None:
         self.output_dir = Path(output_dir)
         self.run_id = run_id or datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-        self.rows: List[Dict[str, Any]] = []
+        self.rows: list[dict[str, Any]] = []
 
     def log_frame(
         self,
@@ -481,7 +561,9 @@ class LongitudinalMetricsRecorder:
             'Sensor_Anomaly_MultiScale_Ratios': json.dumps(dict(sensor_anomaly_ratios), sort_keys=True),
         }
         if not discoveries:
-            self.rows.append({**base_row, 'Channel_A': '', 'Channel_B': '', 'Pearson_R': np.nan, 'Confidence_Score': 0.0, 'Operator_Type': ''})
+            self.rows.append(
+                {**base_row, 'Channel_A': '', 'Channel_B': '', 'Pearson_R': np.nan, 'Confidence_Score': 0.0, 'Operator_Type': ''}
+            )
             return
         for discovery in discoveries:
             channel_a, channel_b = discovery['edge']
@@ -499,7 +581,7 @@ class LongitudinalMetricsRecorder:
     def dataframe(self) -> pd.DataFrame:
         return pd.DataFrame(self.rows)
 
-    def save_summary(self, metadata: Mapping[str, Any]) -> Tuple[Path, Path]:
+    def save_summary(self, metadata: Mapping[str, Any]) -> tuple[Path, Path]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         csv_path = self.output_dir / f'longitudinal_run_{self.run_id}.csv.gz'
         metadata_path = self.output_dir / f'metadata_{self.run_id}.json'
@@ -534,12 +616,14 @@ def evolve_fields(F: Any, t: int, env_factor: float, env_mod: EnvironmentalModer
     return 0.92 * F + 0.08 * xp.tanh(F * 4.0)
 
 
-def build_simulation_state(target_field: Optional[TelemetryTargetField] = None) -> Tuple[List[Agent], Any, Dict[str, float], PerformanceMetrics, Any, Any]:
+def build_simulation_state(
+    target_field: TelemetryTargetField | None = None,
+) -> tuple[list[Agent], Any, dict[str, float], PerformanceMetrics, Any, Any]:
     import networkx as nx
 
     agents = [Agent(i, CFG.AGENT_TYPES[i % 3]) for i in range(CFG.AGENTS)]
     graph = nx.DiGraph()
-    conf_map: Dict[str, float] = defaultdict(float)
+    conf_map: dict[str, float] = defaultdict(float)
     metrics = PerformanceMetrics()
     if target_field is None:
         env_mod: Any = EnvironmentalModerators()
@@ -555,7 +639,7 @@ def calibrate_control_threshold(target_field: TelemetryTargetField, corr_window:
         return float(CFG.DISCOVER_THRESH)
     control = target_field.channel_series(3)
     historic_null = np.roll(control, max(1, corr_window // 2))
-    correlations: List[float] = []
+    correlations: list[float] = []
     for end in range(corr_window, len(control) + 1):
         left = control[end - corr_window : end]
         right = historic_null[end - corr_window : end]
@@ -571,7 +655,7 @@ def _synthetic_reg_deviation(F_cpu: np.ndarray) -> float:
     return float(np.std(F_cpu[2]))
 
 
-def _synthetic_sensor_ratios(F_cpu: np.ndarray) -> Dict[str, float]:
+def _synthetic_sensor_ratios(F_cpu: np.ndarray) -> dict[str, float]:
     baseline = max(float(np.mean(np.abs(F_cpu[3]))), 1e-12)
     return {
         'em_rf_short_long': float(np.mean(np.abs(F_cpu[0])) / baseline),
@@ -579,10 +663,10 @@ def _synthetic_sensor_ratios(F_cpu: np.ndarray) -> Dict[str, float]:
     }
 
 def run_simulation(
-    target_field: Optional[TelemetryTargetField] = None,
+    target_field: TelemetryTargetField | None = None,
     preset: str = 'synthetic',
-    recorder: Optional[LongitudinalMetricsRecorder] = None,
-    calibrated_threshold: Optional[float] = None,
+    recorder: LongitudinalMetricsRecorder | None = None,
+    calibrated_threshold: float | None = None,
 ) -> SimulationArtifacts:
     import matplotlib.gridspec as gridspec
     import matplotlib.pyplot as plt
@@ -627,7 +711,7 @@ def run_simulation(
             reg_deviation = target_field.reg_variance_deviation(frame, CFG.CORR_WINDOW)
             sensor_ratios = target_field.sensor_anomaly_ratios(frame)
 
-        frame_discoveries: List[Dict[str, Any]] = []
+        frame_discoveries: list[dict[str, Any]] = []
         for agent in agents:
             agent.pos = (agent.pos + rng.randint(-CFG.STEP_SIZE, CFG.STEP_SIZE + 1, 2)) % CFG.FIELD_RES
             values = tuple(float(v) for v in F_cpu[:, agent.pos[0], agent.pos[1]])
@@ -690,9 +774,14 @@ def run_simulation(
         ax_stats.set_title(f'Run Stats ({preset})')
 
     animation = FuncAnimation(fig, update, frames=frames_to_render, interval=50, repeat=False)
-    return SimulationArtifacts(animation=animation, recorder=recorder, calibration_threshold=calibrated_threshold)
+    return SimulationArtifacts(
+        animation=animation,
+        recorder=recorder,
+        calibration_threshold=calibrated_threshold,
+        metrics=metrics,
+    )
 
-def _prepare_target_and_threshold(args: argparse.Namespace) -> Tuple[Optional[TelemetryTargetField], Optional[float]]:
+def _prepare_target_and_threshold(args: argparse.Namespace) -> tuple[TelemetryTargetField | None, float | None]:
     if args.preset == 'synthetic':
         if args.input_data is not None:
             return TelemetryTargetField.from_csv(args.input_data, CFG.FIELD_RES, rng), None
@@ -714,7 +803,36 @@ def _prepare_target_and_threshold(args: argparse.Namespace) -> Tuple[Optional[Te
     return target, None
 
 
-def main(argv: Optional[Sequence[str]] = None) -> RunResult:
+def build_run_summary(result: RunResult, metrics: 'PerformanceMetrics') -> dict[str, Any]:
+    """Assemble the lightweight per-run summary written beside the animation."""
+    return {
+        'output_path': str(result.output_path),
+        'preset': result.preset,
+        'experiment': result.experiment,
+        'frames': result.frames,
+        'agents': result.agents,
+        'field_res': result.field_res,
+        'backend': 'GPU' if result.on_gpu else 'CPU',
+        'total_discoveries': metrics.total_discoveries,
+        'discoveries_by_operator_type': dict(metrics.type_counts),
+        'coherence_frames': list(metrics.coherence_frames),
+        'coherence_frame_count': len(metrics.coherence_frames),
+        'discovery_rate_history': list(metrics.discovery_rate_history),
+        'calibration_threshold': result.calibration_threshold,
+        'generated_at': datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def write_metrics_sidecar(result: RunResult, metrics: 'PerformanceMetrics') -> Path:
+    """Write ``<output>.metrics.json`` next to the rendered animation."""
+    summary_path = result.output_path.with_suffix('.metrics.json')
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary = build_run_summary(result, metrics)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+    return summary_path
+
+
+def main(argv: Sequence[str] | None = None) -> RunResult:
     args = parse_args(argv)
     apply_runtime_options(args)
     target_field, calibration_threshold = _prepare_target_and_threshold(args)
@@ -726,10 +844,10 @@ def main(argv: Optional[Sequence[str]] = None) -> RunResult:
         recorder=recorder,
         calibrated_threshold=calibration_threshold,
     )
-    output_path = save_animation_html(artifacts.animation, args.output)
+    output_path = save_animation(artifacts.animation, args.output, fps=args.fps)
 
-    metrics_path: Optional[Path] = None
-    metadata_path: Optional[Path] = None
+    metrics_path: Path | None = None
+    metadata_path: Path | None = None
     if artifacts.recorder is not None:
         metadata = {
             'preset': args.preset,
@@ -755,17 +873,27 @@ def main(argv: Optional[Sequence[str]] = None) -> RunResult:
         field_res=CFG.FIELD_RES,
         on_gpu=on_gpu,
         preset=args.preset,
+        experiment=getattr(args, 'experiment', None) or 'balanced',
         metrics_path=metrics_path,
         metadata_path=metadata_path,
         calibration_threshold=artifacts.calibration_threshold,
     )
+
+    # Write the lightweight metrics summary beside the animation. The animation's
+    # frame updates ran during save_animation above, so metrics are populated now.
+    if artifacts.metrics is not None and not getattr(args, 'no_metrics_sidecar', False):
+        result.summary_path = write_metrics_sidecar(result, artifacts.metrics)
+
     message = (
         'Simulation complete. '
-        f'Preset: {result.preset}. Frames: {result.frames}. Agents: {result.agents}. '
+        f'Preset: {result.preset}. Experiment: {result.experiment}. '
+        f'Frames: {result.frames}. Agents: {result.agents}. '
         f'Field: {result.field_res}x{result.field_res}. '
         f'Backend: {"GPU" if result.on_gpu else "CPU"}. '
         f'Output: {result.output_path}'
     )
+    if result.summary_path is not None:
+        message += f'. Summary: {result.summary_path}'
     if result.metrics_path is not None:
         message += f'. Metrics: {result.metrics_path}. Metadata: {result.metadata_path}'
     print(message)

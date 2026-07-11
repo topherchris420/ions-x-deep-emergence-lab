@@ -2,7 +2,11 @@
 
 # IONS-X Deep Emergence Lab
 
-![IONS-X Deep Emergence Lab preview](docs/assets/preview.svg)
+> A GPU-optional, multi-agent sandbox for watching causal hints emerge inside coupled dynamical fields.
+
+![IONS-X Deep Emergence Lab demo](docs/assets/demo.gif)
+
+*A real run: autonomous operators sample an evolving 4-channel field (left) while the emergent graph of discovered channel relationships forms and decays (right). Generated with `python ions_x_deep_emergence.py --frames 80 --agents 140 --field-res 64 --output docs/assets/demo.gif`.*
 
 IONS-X Deep Emergence Lab is a small Python simulation for watching causal hints emerge inside coupled dynamical fields.
 
@@ -50,7 +54,9 @@ start outputs\latest.html
 
 ```bash
 python ions_x_deep_emergence.py --quick --output outputs/demo.html
+python ions_x_deep_emergence.py --experiment arv                 # named parameter bundle
 python ions_x_deep_emergence.py --frames 120 --agents 100 --field-res 64
+python ions_x_deep_emergence.py --quick --output outputs/demo.gif # shareable GIF
 python ions_x_deep_emergence.py --preset empirical --input-data continuous_telemetry.csv
 python ions_x_deep_emergence.py --preset baseline --input-data continuous_telemetry.csv
 python ions_x_deep_emergence.py --quick --show
@@ -59,17 +65,54 @@ python ions_x_deep_emergence.py --quick --show
 | Option | What it does |
 | --- | --- |
 | `--quick` | Uses a smaller run for first-time users and demos. |
+| `--experiment NAME` | Starts from a named parameter bundle (see below). Explicit flags still override it. |
 | `--frames N` | Sets the number of animation frames. |
 | `--agents N` | Sets the number of autonomous operators. |
 | `--field-res N` | Sets the 2D field resolution. |
-| `--output PATH` | Saves the HTML animation to a specific path. |
+| `--preset MODE` | Run mode: `synthetic`, `baseline`, or `empirical`. |
+| `--input-data PATH` | CSV telemetry for `empirical`/`baseline` runs. |
+| `--output PATH` | Output path. A `.html` suffix writes an interactive animation; a `.gif` suffix writes a shareable clip. |
+| `--fps N` | Frame rate when writing a `.gif`. |
+| `--no-metrics-sidecar` | Skip writing the `<output>.metrics.json` summary. |
 | `--show` | Also displays inline when running in an IPython notebook. |
 
 A successful run prints a short summary:
 
 ```text
-Simulation complete. Preset: synthetic. Frames: 60. Agents: 50. Field: 64x64. Backend: CPU. Output: outputs/latest.html
+Simulation complete. Preset: synthetic. Experiment: balanced. Frames: 60. Agents: 50. Field: 64x64. Backend: CPU. Output: outputs/latest.html. Summary: outputs/latest.metrics.json
 ```
+
+## Experiment Presets
+
+Named presets bundle sensible parameters so you do not have to tune raw numbers first. Any explicit flag overrides the preset.
+
+| `--experiment` | Intent | Key settings |
+| --- | --- | --- |
+| `balanced` | The shipped defaults. | — |
+| `quick` | Fast first run or demo. | small field, 50 agents, 60 frames |
+| `arv` | Associative-remote-viewing style: patient operators reading long temporal displacement. | wide lag/memory, larger correlation window, lower threshold |
+| `coherence` | Emphasize environmental coherence windows. | lower threshold, slower confidence decay, more agents |
+| `dense-agents` | Study crowding and operator density. | 800 agents on a 96×96 field |
+
+```bash
+python ions_x_deep_emergence.py --experiment coherence
+python ions_x_deep_emergence.py --experiment dense-agents --frames 120   # flag overrides preset frames
+```
+
+## Metrics Sidecar
+
+Every run writes a small JSON summary next to the animation (disable with `--no-metrics-sidecar`):
+
+```text
+outputs/demo.html
+outputs/demo.metrics.json
+```
+
+The sidecar records preset, experiment, frame/agent counts, backend, total discoveries, discoveries per operator type, the coherence frames, and the per-frame discovery-rate history — enough to compare runs without reopening the animation.
+
+## Guided Notebook
+
+`notebooks/quickstart.ipynb` walks through the field, operators, moderators, and emergent graph in small cells using quick settings. It runs top-to-bottom locally or in Colab (clone the repo first).
 
 
 ## Longitudinal Empirical Runs
@@ -147,15 +190,29 @@ python -m pytest
 ## Repository Layout
 
 ```text
-ions_x_deep_emergence.py      # simulation, CLI, and HTML output
+ions_x_deep_emergence.py      # simulation, CLI, and HTML/GIF output
+pyproject.toml                # packaging, ruff, and pytest configuration
 requirements.txt              # runtime dependencies
-requirements-dev.txt          # runtime deps plus pytest
+requirements-dev.txt          # runtime deps plus pytest and ruff
 tests/                        # deterministic unit tests
-docs/assets/preview.svg       # README visual preview
+notebooks/quickstart.ipynb    # guided walkthrough
+docs/assets/demo.gif          # generated demo from a real run
+docs/assets/preview.svg       # static README preview
+.github/workflows/ci.yml      # lint + test + smoke render on 3.10-3.12
 ```
+
+## Development
+
+```bash
+python -m pip install -r requirements-dev.txt
+ruff check .
+python -m pytest -q
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and how to add an experiment preset.
 
 ## Next Best Improvements
 
-- Add a generated GIF from a known quick run.
-- Add named experiment presets, for example `--preset arv` or `--preset coherence`.
-- Add a small notebook that explains the model step by step.
+- Stream metrics to a live dashboard during long empirical runs.
+- Add a `--seed` flag to vary runs while staying reproducible.
+- Publish the package to PyPI so `pip install ions-x-deep-emergence-lab` works.
