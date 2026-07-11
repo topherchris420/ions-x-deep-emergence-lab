@@ -4,7 +4,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
 MODULE_PATH = Path(__file__).resolve().parents[1] / 'ions_x_deep_emergence.py'
 MODULE_SPEC = importlib.util.spec_from_file_location('ions_x_deep_emergence', MODULE_PATH)
 sim = importlib.util.module_from_spec(MODULE_SPEC)

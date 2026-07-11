@@ -1,7 +1,6 @@
 import importlib.util
 from pathlib import Path
 
-
 MODULE_PATH = Path(__file__).resolve().parents[1] / 'ions_x_deep_emergence.py'
 MODULE_SPEC = importlib.util.spec_from_file_location('ions_x_deep_emergence_cli', MODULE_PATH)
 
@@ -67,7 +66,7 @@ def test_quick_mode_and_overrides_update_runtime_config():
         assert sim.CFG.FRAMES == 12
         assert sim.CFG.AGENTS == 7
         assert sim.CFG.FIELD_RES == 32
-        assert sim.CFG.SAMPLE_PER_FRAME <= original['SAMPLE_PER_FRAME']
+        assert original['SAMPLE_PER_FRAME'] >= sim.CFG.SAMPLE_PER_FRAME
     finally:
         restore_cfg(sim, original)
 
