@@ -4,217 +4,251 @@
 
 > A GPU-optional, multi-agent sandbox for watching causal hints emerge inside coupled dynamical fields.
 
+[![CI](https://github.com/topherchris420/ions-x-deep-emergence-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/topherchris420/ions-x-deep-emergence-lab/actions/workflows/ci.yml)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 ![IONS-X Deep Emergence Lab demo](docs/assets/demo.gif)
 
-*A real run: autonomous operators sample an evolving 4-channel field (left) while the emergent graph of discovered channel relationships forms and decays (right). Generated with `python ions_x_deep_emergence.py --frames 80 --agents 140 --field-res 64 --output docs/assets/demo.gif`.*
+*A real run: autonomous operators sample an evolving 4-channel field (left) while the emergent graph of discovered channel relationships forms and decays (right). Generated with `ions-x --frames 80 --agents 140 --field-res 64 --output docs/assets/demo.gif`.*
 
-IONS-X Deep Emergence Lab is a small Python simulation for watching causal hints emerge inside coupled dynamical fields.
+---
 
-It creates a 4-channel target field, sends autonomous operators across it, modulates the environment over time, and draws the relationships those operators discover. The point is not to prove nonlocal effects. The point is to give researchers and builders a repeatable sandbox for exploring hypotheses about field dynamics, collective sensing, and signal discovery.
+**IONS-X Deep Emergence Lab** is a Python simulation environment for exploring how causal hints and nonlocal structure emerge inside coupled dynamical fields.
+
+It creates a 4-channel target field, deploys autonomous sensing operators across the spatial grid, modulates environmental parameters over time, and reconstructs the emergent graph of channel relationships discovered by the collective. The goal is to provide researchers and builders with a **repeatable, deterministic sandbox** for testing computational hypotheses about field dynamics, collective sensing, and signal discovery.
+
+---
 
 ## What You See
 
-Running the simulation produces an HTML animation with three live views:
+Running the simulation generates an interactive HTML animation (or shareable GIF) with three synchronized views:
 
-- **Target field:** a heatmap of one evolving field channel.
-- **Emergent graph:** discovered relationships between channels as confidence rises and decays.
-- **Run stats:** cumulative discoveries, active environmental coherence factor, REG variance deviation, and sensor anomaly multi-scale ratios.
+- **Target Field:** Real-time spatial heatmap of evolving field channels (spectral diffusion in synthetic mode; spatialized telemetry in empirical mode).
+- **Emergent Graph:** Directed network graph tracking discovered channel relationships as confidence weights strengthen and decay.
+- **Live Run Stats:** Cumulative discoveries, active environmental coherence factor, REG variance deviation, and multi-scale sensor anomaly ratios.
+
+---
 
 ## Quickstart
 
-From a fresh clone:
+### 1. Install & Run via `ions-x` CLI
 
 ```bash
 git clone https://github.com/topherchris420/ions-x-deep-emergence-lab.git
 cd ions-x-deep-emergence-lab
+
+# Create and activate virtual environment
 python -m venv .venv
-python -m pip install -r requirements.txt
-python ions_x_deep_emergence.py --quick
+source .venv/bin/activate   # On Windows: .venv\Scripts\Activate.ps1
+
+# Install in editable mode
+python -m pip install -e .
+
+# Run a quick simulation with live console streaming
+ions-x --quick --seed 42 --live
 ```
 
-The default output is:
-
+Default output is saved to:
 ```text
 outputs/latest.html
+outputs/latest.metrics.json
 ```
+Open `outputs/latest.html` in any web browser to view the interactive animation.
 
-Open that file in your browser after the run completes.
-
-On Windows PowerShell, use `py` if `python` is not on your path:
+### 2. Windows PowerShell One-Liner
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-py -m pip install -r requirements.txt
-py ions_x_deep_emergence.py --quick
-start outputs\latest.html
+py -m venv .venv; .\.venv\Scripts\Activate.ps1; py -m pip install -e .; ions-x --quick --seed 42 --live; start outputs\latest.html
 ```
+
+---
+
+## Python API Usage
+
+You can import and run simulations directly inside your own Python scripts or Jupyter notebooks:
+
+```python
+import ions_x_deep_emergence as ions_x
+
+# Run an experiment programmatically
+result = ions_x.main([
+    "--experiment", "arv",
+    "--seed", "42",
+    "--frames", "100",
+    "--output", "outputs/my_experiment.html",
+])
+
+print(f"Output saved to: {result.output_path}")
+print(f"Metrics sidecar: {result.summary_path}")
+print(f"Calibration threshold: {result.calibration_threshold}")
+```
+
+---
 
 ## Command-Line Options
 
 ```bash
-python ions_x_deep_emergence.py --quick --output outputs/demo.html
-python ions_x_deep_emergence.py --experiment arv                 # named parameter bundle
-python ions_x_deep_emergence.py --frames 120 --agents 100 --field-res 64
-python ions_x_deep_emergence.py --quick --output outputs/demo.gif # shareable GIF
-python ions_x_deep_emergence.py --preset empirical --input-data continuous_telemetry.csv
-python ions_x_deep_emergence.py --preset baseline --input-data continuous_telemetry.csv
-python ions_x_deep_emergence.py --quick --show
+ions-x --quick --seed 42 --live --output outputs/demo.html
+ions-x --experiment arv                               # Associative Remote Viewing preset
+ions-x --experiment coherence --seed 100              # Environmental coherence focus
+ions-x --frames 120 --agents 100 --field-res 64       # Custom parameter run
+ions-x --quick --output outputs/demo.gif              # Shareable GIF animation
+ions-x --preset empirical --input-data telemetry.csv  # Empirical CSV study
+ions-x --preset baseline --input-data telemetry.csv   # Baseline control calibration
+ions-x --quick --show                                 # Inline display in Jupyter notebooks
 ```
 
-| Option | What it does |
-| --- | --- |
-| `--quick` | Uses a smaller run for first-time users and demos. |
-| `--experiment NAME` | Starts from a named parameter bundle (see below). Explicit flags still override it. |
-| `--frames N` | Sets the number of animation frames. |
-| `--agents N` | Sets the number of autonomous operators. |
-| `--field-res N` | Sets the 2D field resolution. |
-| `--preset MODE` | Run mode: `synthetic`, `baseline`, or `empirical`. |
-| `--input-data PATH` | CSV telemetry for `empirical`/`baseline` runs. |
-| `--seed N` | Random seed for deterministic simulation and reproducibility. |
-| `--live` | Stream metrics and telemetry live to console or notebook during rendering. |
-| `--output PATH` | Output path. A `.html` suffix writes an interactive animation; a `.gif` suffix writes a shareable clip. |
-| `--fps N` | Frame rate when writing a `.gif`. |
-| `--no-metrics-sidecar` | Skip writing the `<output>.metrics.json` summary. |
-| `--show` | Also displays inline when running in an IPython notebook. |
+| Option | Description | Default |
+| :--- | :--- | :--- |
+| `--quick` | Smaller, faster configuration for demos and quick testing. | `False` |
+| `--experiment NAME` | Start from a named parameter bundle (`balanced`, `quick`, `arv`, `coherence`, `dense-agents`). | `balanced` |
+| `--seed N` | Set random seed for deterministic, 100% reproducible runs. | `42` |
+| `--live` | Stream metrics and telemetry live in console / notebook during render. | `False` |
+| `--frames N` | Number of animation frames to simulate and render. | `500` (`60` in quick) |
+| `--agents N` | Number of autonomous sampling operators. | `300` (`50` in quick) |
+| `--field-res N` | 2D field spatial grid resolution (`N x N`). | `128` (`64` in quick) |
+| `--preset MODE` | Run mode: `synthetic` (default), `baseline` (null control), or `empirical` (CSV). | `synthetic` |
+| `--input-data PATH` | CSV telemetry file path for empirical/baseline modes. | `None` |
+| `--output PATH` | Output file path (`.html` for interactive animation, `.gif` for video). | `outputs/latest.html` |
+| `--fps N` | Frame rate when exporting a `.gif` file. | `20` |
+| `--no-metrics-sidecar` | Suppress writing the `<output>.metrics.json` sidecar summary. | `False` |
+| `--show` | Render inline when executing inside an IPython / Jupyter environment. | `False` |
 
-A successful run prints a short summary:
-
-```text
-Simulation complete. Preset: synthetic. Experiment: balanced. Frames: 60. Agents: 50. Field: 64x64. Backend: CPU. Output: outputs/latest.html. Summary: outputs/latest.metrics.json
-```
+---
 
 ## Experiment Presets
 
-Named presets bundle sensible parameters so you do not have to tune raw numbers first. Any explicit flag overrides the preset.
+Presets bundle sensible hyperparameter configurations for specific research scenarios. Explicit CLI flags always override preset defaults.
 
-| `--experiment` | Intent | Key settings |
-| --- | --- | --- |
-| `balanced` | The shipped defaults. | — |
-| `quick` | Fast first run or demo. | small field, 50 agents, 60 frames |
-| `arv` | Associative-remote-viewing style: patient operators reading long temporal displacement. | wide lag/memory, larger correlation window, lower threshold |
-| `coherence` | Emphasize environmental coherence windows. | lower threshold, slower confidence decay, more agents |
-| `dense-agents` | Study crowding and operator density. | 800 agents on a 96×96 field |
+| `--experiment` | Research Intent | Key Settings |
+| :--- | :--- | :--- |
+| `balanced` | Standard default parameters. | 300 agents, 128x128 field, decay: 0.995, thresh: 0.32 |
+| `quick` | Fast initial runs and demos. | 50 agents, 64x64 field, 60 frames, 4 samples/frame |
+| `arv` | Associative Remote Viewing: long memory, wide lag windows, lower threshold for weak, delayed signals. | Memory: 500, Corr Window: 80, Lags: `[15,30,60,120]`, Thresh: 0.28 |
+| `coherence` | Environmental coherence focus: slower confidence decay allows coherence-boosted structures to accumulate. | 400 agents, Thresh: 0.26, Decay: 0.997 |
+| `dense-agents` | Crowding & operator density studies. | 800 agents on a 96x96 field |
 
 ```bash
-python ions_x_deep_emergence.py --experiment coherence
-python ions_x_deep_emergence.py --experiment dense-agents --frames 120   # flag overrides preset frames
+ions-x --experiment coherence --seed 123 --live
+ions-x --experiment dense-agents --frames 120    # Override preset frames
 ```
 
-## Metrics Sidecar
+---
 
-Every run writes a small JSON summary next to the animation (disable with `--no-metrics-sidecar`):
+## Metrics Sidecar (`.metrics.json`)
+
+Every run automatically produces a lightweight JSON sidecar next to the output file (disable with `--no-metrics-sidecar`):
 
 ```text
 outputs/demo.html
 outputs/demo.metrics.json
 ```
 
-The sidecar records preset, experiment, frame/agent counts, backend, total discoveries, discoveries per operator type, the coherence frames, and the per-frame discovery-rate history — enough to compare runs without reopening the animation.
+```json
+{
+  "backend": "CPU",
+  "calibration_threshold": null,
+  "coherence_frame_count": 3,
+  "coherence_frames": [12, 13, 14],
+  "discoveries_by_operator_type": {
+    "forecaster": 4,
+    "integrator": 3,
+    "perceiver": 5
+  },
+  "discovery_rate_history": [0, 1, 0, 2, 0],
+  "experiment": "balanced",
+  "field_res": 64,
+  "frames": 60,
+  "generated_at": "2026-08-20T17:35:00.000000+00:00",
+  "output_path": "outputs/demo.html",
+  "preset": "synthetic",
+  "seed": 42,
+  "total_discoveries": 12
+}
+```
 
-## Guided Notebook
-
-`notebooks/quickstart.ipynb` walks through the field, operators, moderators, and emergent graph in small cells using quick settings. It runs top-to-bottom locally or in Colab (clone the repo first).
-
+---
 
 ## Longitudinal Empirical Runs
 
-The empirical preset maps a CSV into the ATOM target field. Recognized column names include:
+In empirical mode, the lab ingests multi-sensor telemetry from CSV files, spatializes the signals across target field bases, applies real-world environmental moderator scaling, and exports comprehensive discovery logs.
 
-| ATOM channel | Preferred column | Other accepted names |
-| --- | --- | --- |
-| Channel 0 EM/RF telemetry | `em_rf` | `electromagnetic_rf`, `magnetometer`, `rf_noise`, `rf_spectrum_noise`, `channel_0` |
-| Channel 1 optical/IR anomaly | `optical_ir` | `optical_ir_anomaly`, `pixel_variance`, `sky_pixel_variance`, `ir_anomaly`, `channel_1` |
-| Channel 2 consciousness proxy | `reg_variance` | `consciousness_proxy`, `reg_entropy`, `egg_variance`, `raw_entropy`, `channel_2` |
-| Channel 3 control baseline | generated locally | pseudo-random control values are generated by the run |
+### Accepted Column Schema
 
-Optional moderator columns are `kp_index`, `lunar_phase`, `sidereal_time`, and `xray_flux`. Missing timestamps and null sensor blocks are forward-filled, then backfilled only for leading gaps, so long-running telemetry files can continue through brief outages.
+| ATOM Channel | Primary Column | Accepted Aliases |
+| :--- | :--- | :--- |
+| **Channel 0: EM/RF** | `em_rf` | `electromagnetic_rf`, `magnetometer`, `rf_noise`, `rf_spectrum_noise`, `channel_0` |
+| **Channel 1: Optical/IR** | `optical_ir` | `optical_ir_anomaly`, `pixel_variance`, `sky_pixel_variance`, `ir_anomaly`, `channel_1` |
+| **Channel 2: Consciousness Proxy** | `reg_variance` | `consciousness_proxy`, `reg_entropy`, `egg_variance`, `raw_entropy`, `channel_2` |
+| **Channel 3: Control Baseline** | Local Gaussian Control | Synthetically generated uncorrelated baseline channel |
 
-Empirical and baseline runs export:
+Optional environmental covariates include `kp_index`, `lunar_phase`, `sidereal_time`, and `xray_flux`.
 
+### Exported Artifacts
+
+Empirical runs export:
 ```text
 outputs/longitudinal_run_[timestamp].csv.gz
 outputs/metadata_[timestamp].json
 ```
 
-Each discovery row includes timestamp, channel pair, Pearson correlation, confidence score, active moderator values, and operator density.
+Each discovery row records timestamp, channel pair, Pearson correlation, confidence score, active moderator values, and operator density.
 
-## The ATOM Model
+---
 
-This implementation is organized around the ATOM framing used by the IONS-X research strategy.
+## The ATOM Architecture
 
-### Analyses
+The simulation is built around the **ATOM** framing used by the IONS-X research program:
 
-Multi-scale relationship detection over recent operator observations.
-
-### Targets
-
-A 2D, 4-channel field. Synthetic mode still evolves coupled fields through spectral diffusion; empirical and baseline presets map time-series telemetry directly into spatial-temporal target grids.
-
-### Operators
-
-Autonomous agents that sample field values, keep short memory, and report correlations above a confidence threshold.
-
-### Moderators
-
-Environmental modulation terms, including periodic variation and short coherence windows.
-
-## Glossary
-
-| Term | Meaning in this repo |
-| --- | --- |
-| Target | The simulated field being sampled. |
-| Operator | An autonomous sampling agent. |
-| Moderator | A changing environmental factor that affects field evolution. |
-| Discovery | A channel relationship whose correlation exceeds the configured threshold. |
-| Coherence window | A short period where modulation is boosted. |
-| Emergent graph | The directed graph of currently active discoveries. |
-
-## Research Applications
-
-This lab is useful for prototyping ideas around:
-
-- Nonlocal correlation discovery and collective signal detection.
-- Direct mind-machine interaction simulation as a computational hypothesis space.
-- Associative remote viewing style forecasting experiments against noisy, temporally displaced data.
-
-Treat the output as a simulation artifact, not a scientific claim by itself. The value is in repeatable experiments, clearer assumptions, and testable changes.
-
-## Run Tests
-
-Install the dev dependencies, then run pytest:
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest
+```
+┌───────────────────────────────────────────────────────────────┐
+│                      MODERATORS (M)                           │
+│  Geomagnetic (Kp), Lunar Phase, Sidereal Time, Coherence      │
+└──────────────┬────────────────────────────────┬───────────────┘
+               │ Modulates Dynamics             │ Scales Threshold & Decay
+               ▼                                ▼
+┌───────────────────────────────┐      ┌────────────────────────┐
+│         TARGETS (T)           │      │     OPERATORS (O)      │
+│  Coupled 4-Channel 2D Field   │ ───► │  Autonomous Agents     │
+│  (EM/RF, Opt/IR, REG, Ctrl)   │      │  (Sample & Remember)   │
+└───────────────────────────────┘      └───────────┬────────────┘
+                                                   │
+                                                   ▼ Correlate & Detect
+                                       ┌────────────────────────┐
+                                       │     ANALYSES (A)       │
+                                       │  Emergent Relationship │
+                                       │  Graph & Confidence    │
+                                       └────────────────────────┘
 ```
 
-## Repository Layout
+---
 
-```text
-ions_x_deep_emergence.py      # simulation, CLI, and HTML/GIF output
-pyproject.toml                # packaging, ruff, and pytest configuration
-requirements.txt              # runtime dependencies
-requirements-dev.txt          # runtime deps plus pytest and ruff
-tests/                        # deterministic unit tests
-notebooks/quickstart.ipynb    # guided walkthrough
-docs/assets/demo.gif          # generated demo from a real run
-docs/assets/preview.svg       # static README preview
-.github/workflows/ci.yml      # lint + test + smoke render on 3.10-3.12
-```
+## Guided Notebook
 
-## Development
+`notebooks/quickstart.ipynb` walks through the field, operators, moderators, and emergent graph in interactive cells using quick settings. It runs top-to-bottom locally or in Google Colab.
+
+---
+
+## Development & Testing
 
 ```bash
-python -m pip install -r requirements-dev.txt
+# Install development dependencies
+python -m pip install -e .[dev]
+
+# Run linter
 ruff check .
-python -m pytest -q
+
+# Run complete test suite (28 deterministic tests)
+python -m pytest -v
+
+# Build distribution packages
+python -m build
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and how to add an experiment preset.
+---
 
-## Next Best Improvements
+## License
 
-- Add a lightweight interactive web dashboard (Streamlit / Gradio).
-- Expand channel support for arbitrary multi-channel sensor arrays.
-- Support parallel batch runs across seeds for parameter sweeps.
+This project is licensed under the [MIT License](LICENSE).
