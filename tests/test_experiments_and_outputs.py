@@ -221,3 +221,82 @@ def test_main_respects_no_metrics_sidecar_flag(tmp_path):
         assert not (tmp_path / 'demo.metrics.json').exists()
     finally:
         restore_cfg(sim, original)
+
+
+def test_build_run_summary_records_seed():
+    sim = load_module()
+    metrics = sim.PerformanceMetrics()
+    result = sim.RunResult(
+        output_path=Path('outputs/demo.html'),
+        frames=1,
+        agents=3,
+        field_res=16,
+        on_gpu=False,
+        seed=1234,
+        preset='synthetic',
+        experiment='quick',
+    )
+
+    summary = sim.build_run_summary(result, metrics)
+    assert summary['seed'] == 1234
+
+
+def test_simulation_deterministic_with_same_seed(tmp_path):
+    sim = load_module()
+    original = snapshot_cfg(sim)
+    out1 = tmp_path / 'run1.html'
+    out2 = tmp_path / 'run2.html'
+
+    try:
+        result1 = sim.main([
+            '--quick',
+            '--frames', '10',
+            '--agents', '20',
+            '--field-res', '32',
+            '--seed', '777',
+            '--output', str(out1),
+        ])
+
+        result2 = sim.main([
+            '--quick',
+            '--frames', '10',
+            '--agents', '20',
+            '--field-res', '32',
+            '--seed', '777',
+            '--output', str(out2),
+        ])
+
+        sidecar1 = json.loads(result1.summary_path.read_text(encoding='utf-8'))
+        sidecar2 = json.loads(result2.summary_path.read_text(encoding='utf-8'))
+
+        assert sidecar1['seed'] == 777
+        assert sidecar2['seed'] == 777
+        assert sidecar1['total_discoveries'] == sidecar2['total_discoveries']
+        assert sidecar1['discoveries_by_operator_type'] == sidecar2['discoveries_by_operator_type']
+        assert sidecar1['coherence_frames'] == sidecar2['coherence_frames']
+        assert sidecar1['discovery_rate_history'] == sidecar2['discovery_rate_history']
+    finally:
+        restore_cfg(sim, original)
+
+
+def test_live_dashboard_streams_to_stdout(capsys):
+    sim = load_module()
+    dashboard = sim.LiveDashboard(total_frames=5, enabled=True, is_notebook=False)
+
+    dashboard.update(
+        frame=0,
+        discoveries_this_frame=2,
+        total_discoveries=2,
+        modulation=1.05,
+        is_coherence=True,
+        reg_deviation=0.15,
+        sensor_ratios={'em_rf_short_long': 1.2, 'optical_ir_short_long': 0.9},
+        last_edge='ch0->ch2',
+    )
+    dashboard.close()
+
+    captured = capsys.readouterr()
+    assert '[Live 1/5]' in captured.out
+    assert 'Discoveries: 2 (+2)' in captured.out
+    assert 'COHERENCE ACTIVE' in captured.out
+    assert 'ch0->ch2' in captured.out

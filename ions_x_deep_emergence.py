@@ -27,26 +27,35 @@ except ImportError:
 
 
 class CFG:
-    FIELD_RES = 128
-    CHANNELS = 4
-    AGENTS = 300
-    MEMORY = 300
-    AGENT_TYPES = ['perceiver', 'forecaster', 'integrator']
-    CORR_WINDOW = 50
-    DISCOVER_THRESH = 0.32
-    LAG_FRAMES = [5, 15, 30, 60]
-    CONFIDENCE_DECAY = 0.995
-    GEOMAG_INFLUENCE = True
-    LUNAR_CYCLE = True
-    COHERENCE_BOOST = True
-    FRAMES = 500
-    SAMPLE_PER_FRAME = 8
-    SEED = 42
-    STEP_SIZE = 3
+    FIELD_RES: int = 128
+    CHANNELS: int = 4
+    AGENTS: int = 300
+    MEMORY: int = 300
+    AGENT_TYPES: tuple[str, ...] = ('perceiver', 'forecaster', 'integrator')
+    CORR_WINDOW: int = 50
+    DISCOVER_THRESH: float = 0.32
+    LAG_FRAMES: tuple[int, ...] = (5, 15, 30, 60)
+    CONFIDENCE_DECAY: float = 0.995
+    GEOMAG_INFLUENCE: bool = True
+    LUNAR_CYCLE: bool = True
+    COHERENCE_BOOST: bool = True
+    FRAMES: int = 500
+    SAMPLE_PER_FRAME: int = 8
+    SEED: int = 42
+    STEP_SIZE: int = 3
 
 
 CFG = CFG()
 rng = np.random.RandomState(CFG.SEED)
+
+
+def set_seed(seed: int | None = None) -> None:
+    """Set the global simulation random seed deterministically."""
+    if seed is not None:
+        CFG.SEED = int(seed)
+    rng.seed(CFG.SEED)
+
+
 DEFAULT_OUTPUT = Path('outputs/latest.html')
 DEFAULT_METRICS_DIR = Path('outputs')
 DEFAULT_GIF_FPS = 20
@@ -61,7 +70,7 @@ EXPERIMENTS: Mapping[str, Mapping[str, Any]] = {
     # long temporal displacement, so widen memory, lag, and the correlation
     # window while lowering the discovery bar for weak, lagged structure.
     'arv': {
-        'LAG_FRAMES': [15, 30, 60, 120],
+        'LAG_FRAMES': (15, 30, 60, 120),
         'MEMORY': 500,
         'CORR_WINDOW': 80,
         'DISCOVER_THRESH': 0.28,
@@ -106,6 +115,7 @@ class RunResult:
     agents: int
     field_res: int
     on_gpu: bool
+    seed: int = 42
     preset: str = 'synthetic'
     experiment: str = 'balanced'
     metrics_path: Path | None = None
@@ -120,12 +130,82 @@ class SimulationArtifacts:
     recorder: Optional['LongitudinalMetricsRecorder'] = None
     calibration_threshold: float | None = None
     metrics: Optional['PerformanceMetrics'] = None
+    dashboard: Optional['LiveDashboard'] = None
 
 
 @dataclass
 class Observation:
     values: tuple[float, ...]
     env_factor: float
+
+
+class LiveDashboard:
+    """Lightweight real-time metrics streaming panel during animation renders."""
+
+    def __init__(self, total_frames: int, enabled: bool = True, is_notebook: bool = False) -> None:
+        self.total_frames = total_frames
+        self.enabled = enabled
+        self.is_notebook = is_notebook
+        self._display_handle: Any = None
+        if self.enabled and self.is_notebook:
+            try:
+                from IPython.display import display
+
+                self._display_handle = display(display_id=True)
+            except (ImportError, RuntimeError, AttributeError):
+                self._display_handle = None
+
+    def update(
+        self,
+        frame: int,
+        discoveries_this_frame: int,
+        total_discoveries: int,
+        modulation: float,
+        is_coherence: bool,
+        reg_deviation: float,
+        sensor_ratios: Mapping[str, float],
+        last_edge: str | None = None,
+    ) -> None:
+        if not self.enabled:
+            return
+
+        coherence_tag = ' [COHERENCE ACTIVE]' if is_coherence else ''
+        edge_str = f' | Last: {last_edge}' if last_edge else ''
+        em_val = sensor_ratios.get('em_rf_short_long', 0.0)
+        opt_val = sensor_ratios.get('optical_ir_short_long', 0.0)
+
+        text = (
+            f'[Live {frame + 1:>{len(str(self.total_frames))}}/{self.total_frames}] '
+            f'Discoveries: {total_discoveries} (+{discoveries_this_frame}) | '
+            f'Coherence: {modulation:.3f}{coherence_tag} | '
+            f'REG Dev: {reg_deviation:+.3f} | '
+            f'Sensors (EM/Opt): {em_val:.2f}/{opt_val:.2f}'
+            f'{edge_str}'
+        )
+
+        if self._display_handle is not None:
+            try:
+                from IPython.display import HTML
+
+                style = 'font-family:monospace; background:#1e1e1e; color:#eee; padding:8px; border-radius:4px;'
+                self._display_handle.update(HTML(f'<pre style="{style}">{text}</pre>'))
+                return
+            except (ImportError, RuntimeError, AttributeError):
+                self._display_handle = None
+
+        import sys
+
+        sys.stdout.write(f'\r{text}')
+        sys.stdout.flush()
+
+    def close(self) -> None:
+        if not self.enabled:
+            return
+        if self._display_handle is None:
+            import sys
+
+            sys.stdout.write('\n')
+            sys.stdout.flush()
 
 
 def positive_int(raw: str) -> int:
@@ -162,6 +242,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help='Output path. Use a .html suffix for an interactive animation or .gif for a shareable clip.',
     )
     parser.add_argument('--fps', type=positive_int, default=DEFAULT_GIF_FPS, help='Frames per second when writing a .gif output.')
+    parser.add_argument('--seed', type=int, help='Random seed for deterministic simulation and reproducibility.')
+    parser.add_argument(
+        '--live',
+        action='store_true',
+        help='Stream discoveries, environmental factor, and sensor telemetry live to the console or notebook during rendering.',
+    )
     parser.add_argument(
         '--no-metrics-sidecar',
         action='store_true',
@@ -182,8 +268,11 @@ def apply_experiment(name: str | None) -> None:
 
 
 def apply_runtime_options(args: argparse.Namespace) -> CFG:
-    # Precedence, lowest to highest: experiment bundle -> --quick -> explicit flags.
+    # Precedence, lowest to highest: experiment bundle -> --seed -> --quick -> explicit flags.
     apply_experiment(getattr(args, 'experiment', None))
+    if getattr(args, 'seed', None) is not None:
+        CFG.SEED = args.seed
+    set_seed(CFG.SEED)
     if args.quick:
         CFG.FIELD_RES = 64
         CFG.AGENTS = 50
@@ -198,7 +287,7 @@ def apply_runtime_options(args: argparse.Namespace) -> CFG:
     return CFG
 
 
-def save_animation(animation: Any, output_path: Path, fps: int = DEFAULT_GIF_FPS) -> Path:
+def save_animation(animation: Any, output_path: Path, fps: int = DEFAULT_GIF_FPS, dashboard: LiveDashboard | None = None) -> Path:
     """Render the animation to ``output_path``.
 
     A ``.gif`` suffix writes a shareable clip via Pillow; anything else writes a
@@ -207,12 +296,16 @@ def save_animation(animation: Any, output_path: Path, fps: int = DEFAULT_GIF_FPS
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.suffix.lower() == '.gif':
-        from matplotlib.animation import PillowWriter
+    try:
+        if output_path.suffix.lower() == '.gif':
+            from matplotlib.animation import PillowWriter
 
-        animation.save(str(output_path), writer=PillowWriter(fps=fps))
-    else:
-        output_path.write_text(animation.to_jshtml(), encoding='utf-8')
+            animation.save(str(output_path), writer=PillowWriter(fps=fps))
+        else:
+            output_path.write_text(animation.to_jshtml(), encoding='utf-8')
+    finally:
+        if dashboard is not None:
+            dashboard.close()
     return output_path
 
 
@@ -484,7 +577,7 @@ class RealWorldModerator:
         self.m = float(1.0 + 0.55 * pressure)
         self.discovery_threshold = float(max(0.05, self.base_threshold / self.m))
         self.confidence_decay = float(max(0.90, self.base_decay - (self.m - 1.0) * 0.025))
-        self.coherence_window = int(round(self.base_window * (1.0 + 0.75 * pressure)))
+        self.coherence_window = round(self.base_window * (1.0 + 0.75 * pressure))
         if pressure >= 0.35 or not self.coherence_events:
             self.coherence_events.append(t)
 
@@ -589,7 +682,7 @@ class LongitudinalMetricsRecorder:
         dataframe.to_csv(csv_path, index=False, compression='gzip')
         summary = {
             **dict(metadata),
-            'row_count': int(len(dataframe)),
+            'row_count': len(dataframe),
             'discovery_rows': int((dataframe.get('Confidence_Score', pd.Series(dtype=float)) > 0).sum()),
             'csv_path': str(csv_path),
         }
@@ -667,10 +760,13 @@ def run_simulation(
     preset: str = 'synthetic',
     recorder: LongitudinalMetricsRecorder | None = None,
     calibrated_threshold: float | None = None,
+    live: bool = False,
+    live_dashboard: LiveDashboard | None = None,
+    is_notebook: bool = False,
 ) -> SimulationArtifacts:
-    import matplotlib.gridspec as gridspec
     import matplotlib.pyplot as plt
     import networkx as nx
+    from matplotlib import gridspec
     from matplotlib.animation import FuncAnimation
 
     plt.rcParams['animation.embed_limit'] = 200
@@ -683,6 +779,9 @@ def run_simulation(
 
     agents, graph, conf_map, metrics, env_mod, F = build_simulation_state(target_field)
     frames_to_render = CFG.FRAMES if target_field is None else min(CFG.FRAMES, target_field.frame_count)
+
+    if live_dashboard is None and live:
+        live_dashboard = LiveDashboard(total_frames=frames_to_render, enabled=True, is_notebook=is_notebook)
 
     def update(frame: int) -> None:
         nonlocal F
@@ -746,6 +845,19 @@ def run_simulation(
                 sensor_anomaly_ratios=sensor_ratios,
             )
 
+        last_edge = f"{frame_discoveries[-1]['edge'][0]}->{frame_discoveries[-1]['edge'][1]}" if frame_discoveries else None
+        if live_dashboard is not None:
+            live_dashboard.update(
+                frame=frame,
+                discoveries_this_frame=len(frame_discoveries),
+                total_discoveries=metrics.total_discoveries,
+                modulation=modulation,
+                is_coherence=env_mod.is_coherence_active(frame),
+                reg_deviation=reg_deviation,
+                sensor_ratios=sensor_ratios,
+                last_edge=last_edge,
+            )
+
         ax_field.clear()
         ax_field.imshow(F_cpu[0], cmap='magma')
         ax_field.set_title('Channel 0: EM/RF Telemetry')
@@ -779,6 +891,7 @@ def run_simulation(
         recorder=recorder,
         calibration_threshold=calibrated_threshold,
         metrics=metrics,
+        dashboard=live_dashboard,
     )
 
 def _prepare_target_and_threshold(args: argparse.Namespace) -> tuple[TelemetryTargetField | None, float | None]:
@@ -812,6 +925,7 @@ def build_run_summary(result: RunResult, metrics: 'PerformanceMetrics') -> dict[
         'frames': result.frames,
         'agents': result.agents,
         'field_res': result.field_res,
+        'seed': result.seed,
         'backend': 'GPU' if result.on_gpu else 'CPU',
         'total_discoveries': metrics.total_discoveries,
         'discoveries_by_operator_type': dict(metrics.type_counts),
@@ -843,8 +957,10 @@ def main(argv: Sequence[str] | None = None) -> RunResult:
         preset=args.preset,
         recorder=recorder,
         calibrated_threshold=calibration_threshold,
+        live=getattr(args, 'live', False),
+        is_notebook=getattr(args, 'show', False),
     )
-    output_path = save_animation(artifacts.animation, args.output, fps=args.fps)
+    output_path = save_animation(artifacts.animation, args.output, fps=args.fps, dashboard=artifacts.dashboard)
 
     metrics_path: Path | None = None
     metadata_path: Path | None = None
@@ -872,6 +988,7 @@ def main(argv: Sequence[str] | None = None) -> RunResult:
         agents=CFG.AGENTS,
         field_res=CFG.FIELD_RES,
         on_gpu=on_gpu,
+        seed=CFG.SEED,
         preset=args.preset,
         experiment=getattr(args, 'experiment', None) or 'balanced',
         metrics_path=metrics_path,
@@ -900,5 +1017,10 @@ def main(argv: Sequence[str] | None = None) -> RunResult:
     return result
 
 
+def cli(argv: Sequence[str] | None = None) -> None:
+    """Console script entrypoint for the ions-x command."""
+    main(argv)
+
+
 if __name__ == '__main__':
-    main()
+    cli()

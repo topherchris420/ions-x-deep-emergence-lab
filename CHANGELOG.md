@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-08-20
+
+### Added
+- **Deterministic seed control** via `--seed N` (and `set_seed()`). Sets module RNG deterministically,
+  ensuring identical metrics sidecars across runs with matching seeds and reproducible empirical experiments.
+- **Live metrics dashboard** via `--live`. Streams real-time frame progress, cumulative discoveries,
+  active coherence factor, REG variance deviation, and multi-scale sensor anomaly ratios without blocking animation rendering.
+- **Dedicated CLI entry point** (`cli()`) preventing return-object exit code issues when running `ions-x`.
+- **Packaging build support and modern SPDX license specification** in `pyproject.toml`, fully validated with `python -m build`.
+- **Test suite additions** covering seed reproducibility, seed variance, live dashboard stdout streaming, and CLI UX.
+
+### Changed
+- Refactored `CFG` class attributes to use immutable tuples for mutable defaults (`AGENT_TYPES`, `LAG_FRAMES`), achieving 100% clean ruff compliance.
+- Upgraded `build_run_summary` and metrics sidecar schema to record the active simulation `seed`.
+- Cleaned up redundant casts in `RealWorldModerator` and `LongitudinalMetricsRecorder`.
+
 ## [0.2.0] - 2026-07-11
 
 ### Added

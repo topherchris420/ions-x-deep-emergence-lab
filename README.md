@@ -71,6 +71,8 @@ python ions_x_deep_emergence.py --quick --show
 | `--field-res N` | Sets the 2D field resolution. |
 | `--preset MODE` | Run mode: `synthetic`, `baseline`, or `empirical`. |
 | `--input-data PATH` | CSV telemetry for `empirical`/`baseline` runs. |
+| `--seed N` | Random seed for deterministic simulation and reproducibility. |
+| `--live` | Stream metrics and telemetry live to console or notebook during rendering. |
 | `--output PATH` | Output path. A `.html` suffix writes an interactive animation; a `.gif` suffix writes a shareable clip. |
 | `--fps N` | Frame rate when writing a `.gif`. |
 | `--no-metrics-sidecar` | Skip writing the `<output>.metrics.json` summary. |
@@ -213,6 +215,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and how to add an e
 
 ## Next Best Improvements
 
-- Stream metrics to a live dashboard during long empirical runs.
-- Add a `--seed` flag to vary runs while staying reproducible.
-- Publish the package to PyPI so `pip install ions-x-deep-emergence-lab` works.
+- Add a lightweight interactive web dashboard (Streamlit / Gradio).
+- Expand channel support for arbitrary multi-channel sensor arrays.
+- Support parallel batch runs across seeds for parameter sweeps.

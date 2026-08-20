@@ -71,6 +71,33 @@ def test_quick_mode_and_overrides_update_runtime_config():
         restore_cfg(sim, original)
 
 
+def test_parse_args_accepts_seed_and_live_flags():
+    sim = load_module()
+
+    args = sim.parse_args([
+        '--seed', '123',
+        '--live',
+    ])
+
+    assert args.seed == 123
+    assert args.live is True
+
+
+def test_seed_flag_updates_runtime_config_and_rng():
+    sim = load_module()
+    original = snapshot_cfg(sim)
+    original_seed = sim.CFG.SEED
+    try:
+        args = sim.parse_args(['--seed', '999'])
+        sim.apply_runtime_options(args)
+
+        assert sim.CFG.SEED == 999
+    finally:
+        restore_cfg(sim, original)
+        sim.CFG.SEED = original_seed
+        sim.set_seed(original_seed)
+
+
 def test_main_writes_html_output_without_running_full_simulation(tmp_path):
     sim = load_module()
     original = snapshot_cfg(sim)

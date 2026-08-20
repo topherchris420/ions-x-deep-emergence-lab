@@ -21,31 +21,18 @@
   (`.github/workflows/ci.yml`: lint + tests on 3.10-3.12 + smoke render), a `CHANGELOG.md`, and a
   `CONTRIBUTING.md`.
 - Modernized type hints and made the module ruff-clean.
+- **Added live metrics dashboard** (`--live`): real-time streaming stats for discoveries, coherence factor,
+  REG variance deviation, and multi-scale sensor anomaly ratios in console and notebook handles during rendering. (Was "Next UX Task 1".)
+- **Added deterministic seed control** (`--seed N`): seedable module RNG, identical metrics sidecar reproduction across runs,
+  and comprehensive test coverage. (Was "Next UX Task 2".)
+- **Validated packaging and build** (`python -m build` & `ions-x` CLI): verified standalone build and console script execution. (Was "Next UX Task 3".)
 
 ## Next UX Tasks
 
-### 1. Live metrics dashboard
+### 1. Interactive Web UI / Streamlit App
 
-Stream discoveries and coherence factor to a lightweight live view during long empirical runs,
-instead of only writing the sidecar at the end.
+Build a lightweight web interface for interactive parameter tuning, CSV upload, and real-time graph visualization.
 
-Acceptance criteria:
-- A `--live` (or notebook widget) mode updates a small stats panel as frames render.
-- Works without blocking the animation render.
+### 2. Multi-Target Channel Expansion
 
-### 2. Seed control
-
-Add a `--seed` flag so runs can vary while remaining reproducible.
-
-Acceptance criteria:
-- `--seed N` sets the module RNG deterministically.
-- Two runs with the same seed produce identical metrics sidecars.
-- A test asserts seed reproducibility.
-
-### 3. Package publish
-
-Publish to PyPI so `pip install ions-x-deep-emergence-lab` and the `ions-x` command work.
-
-Acceptance criteria:
-- Build succeeds with `python -m build`.
-- The `ions-x` entry point runs a quick simulation end to end.
+Support dynamic target channel definitions beyond the default 4-channel schema for custom multi-sensor arrays.
