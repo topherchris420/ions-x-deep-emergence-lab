@@ -2,6 +2,13 @@
 
 ## Done
 
+- Added a renderer-independent sequential engine, headless JSON runs, and paired
+  multi-seed synthetic coupling studies with a committed eight-seed reference report.
+- Fixed duplicate animation steps, directed-correlation semantics, decaying graph
+  weights, dark-render contrast, actual frame counts, and configuration leakage.
+- Added experiment passports, input checks, imputation counts, nondegenerate baseline
+  channels, collision-resistant longitudinal outputs, and 24 regression cases.
+
 - Standardized the project name as `IONS-X Deep Emergence Lab`.
 - Moved runtime behavior behind `main()` and `if __name__ == "__main__"`.
 - Added deterministic tests for agent discovery, coherence windows, and import safety.

@@ -24,10 +24,11 @@ ruff check .
 python -m pytest -q
 ```
 
-Then confirm a real run still works end to end:
+Then confirm rendering and a paired experiment both work end to end:
 
 ```bash
 python ions_x_deep_emergence.py --quick --frames 8 --agents 20 --field-res 32 --output outputs/check.html
+python ions_x_deep_emergence.py --quick --control-study 2 --agents 4 --field-res 8 --output outputs/control.json
 ```
 
 ## Guidelines
@@ -50,3 +51,12 @@ python ions_x_deep_emergence.py --quick --frames 8 --agents 20 --field-res 32 --
    to values. A short comment should say what the preset is *for*.
 2. Document it in the README's experiment-presets table.
 3. Add a test asserting the preset applies (see `tests/test_experiments_and_outputs.py`).
+
+## Experiment integrity
+
+Read [the experiment protocol](docs/experiment-design.md) before modifying field
+dynamics or detection. Keep paired random schedules matched; do not let rendering
+consume simulation randomness. `main()` resets configuration; lower-level engine
+callers own configuration and must run sequentially. Treat detections as dependent
+observations, not independent experiments, and keep the shared detector and inactive
+legacy settings accurately described.

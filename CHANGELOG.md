@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Separate sequential simulation from rendering; process each frame once in HTML,
+  GIF, and new headless JSON mode. Close rendered figures after export.
+- Add paired multi-seed synthetic coupling ablations with per-pair rates and complete
+  run records. Replay matching random draws and explicitly distinguish descriptive
+  comparisons from statistical significance.
+- Correct undirected association semantics and stale graph weights; stabilize graph
+  layout and refresh the observation dashboard.
+- Record configuration, source/input hashes, runtime versions, actual frames, unique
+  associations, and sensor-imputation counts. Isolate CLI configuration between runs.
+- Reject missing/invalid sensor channels and infinities; make baseline channels
+  independently variable; prevent longitudinal filename collisions.
+- Vectorize pairwise Pearson evaluation with safe constant-channel handling.
+- Document inactive legacy settings, shared operator behavior, offline preprocessing,
+  heuristic calibration, and limits of scientific interpretation.
+
+
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).

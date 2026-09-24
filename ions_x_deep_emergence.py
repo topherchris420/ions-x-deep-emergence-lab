@@ -1,12 +1,16 @@
 import argparse
+import hashlib
 import json
 import math
+import platform
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Optional
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -46,6 +50,7 @@ class CFG:
 
 
 CFG = CFG()
+DEFAULT_CONFIG = {key: getattr(CFG, key) for key in type(CFG).__annotations__}
 rng = np.random.RandomState(CFG.SEED)
 
 
@@ -122,6 +127,7 @@ class RunResult:
     metadata_path: Path | None = None
     summary_path: Path | None = None
     calibration_threshold: float | None = None
+    passport: dict[str, Any] | None = None
 
 
 @dataclass
@@ -131,6 +137,7 @@ class SimulationArtifacts:
     calibration_threshold: float | None = None
     metrics: Optional['PerformanceMetrics'] = None
     dashboard: Optional['LiveDashboard'] = None
+    engine: Optional['SimulationEngine'] = None
 
 
 @dataclass
@@ -243,6 +250,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument('--fps', type=positive_int, default=DEFAULT_GIF_FPS, help='Frames per second when writing a .gif output.')
     parser.add_argument('--seed', type=int, help='Random seed for deterministic simulation and reproducibility.')
+    parser.add_argument('--headless', action='store_true', help='Run without rendering; write a JSON experiment report.')
+    parser.add_argument('--control-study', type=positive_int, metavar='N',
+                        help='Compare coupled and uncoupled synthetic fields over N paired seeds; write JSON.')
     parser.add_argument(
         '--live',
         action='store_true',
@@ -254,7 +264,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help='Do not write the <output>.metrics.json summary next to the animation.',
     )
     parser.add_argument('--show', action='store_true', help='Also display inline when running in an IPython notebook.')
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.seed is not None and not 0 <= args.seed < 2**32:
+        parser.error('--seed must be between 0 and 4294967295')
+    if args.control_study and (args.preset != 'synthetic' or args.input_data is not None):
+        parser.error('--control-study supports synthetic fields only')
+    if (args.headless or args.control_study) and args.show:
+        parser.error('--show requires an animation output')
+    if args.headless or args.control_study:
+        if args.output == DEFAULT_OUTPUT:
+            args.output = Path('outputs/control-study.json' if args.control_study else 'outputs/latest.json')
+        if args.output.suffix.lower() != '.json':
+            parser.error('headless and control-study output must use a .json suffix')
+    elif args.output.suffix.lower() not in {'.html', '.gif'}:
+        parser.error('animation output must use a .html or .gif suffix')
+    return args
 
 
 def apply_experiment(name: str | None) -> None:
@@ -269,6 +293,8 @@ def apply_experiment(name: str | None) -> None:
 
 def apply_runtime_options(args: argparse.Namespace) -> CFG:
     # Precedence, lowest to highest: experiment bundle -> --seed -> --quick -> explicit flags.
+    for key, value in DEFAULT_CONFIG.items():
+        setattr(CFG, key, value)
     apply_experiment(getattr(args, 'experiment', None))
     if getattr(args, 'seed', None) is not None:
         CFG.SEED = args.seed
@@ -306,6 +332,10 @@ def save_animation(animation: Any, output_path: Path, fps: int = DEFAULT_GIF_FPS
     finally:
         if dashboard is not None:
             dashboard.close()
+        if hasattr(animation, '_fig'):
+            import matplotlib.pyplot as plt
+
+            plt.close(animation._fig)
     return output_path
 
 
@@ -373,6 +403,7 @@ class TelemetryTargetField:
     raw_values: pd.DataFrame
     covariates: pd.DataFrame
     source: str = 'dataframe'
+    quality_report: dict[str, Any] | None = None
 
     @classmethod
     def from_csv(cls, input_path: Path, field_res: int, rng: np.random.RandomState) -> 'TelemetryTargetField':
@@ -394,16 +425,27 @@ class TelemetryTargetField:
 
         timestamps = _filled_timestamps(df).reset_index(drop=True)
         raw_values = pd.DataFrame(index=range(len(df)))
+        quality: dict[str, Any] = {'rows': len(df), 'imputed_sensor_cells': {}, 'defaulted_covariates': [],
+                                   'preprocessing': 'offline forward fill then backward fill; full-series standardization'}
         for canonical, aliases in SENSOR_ALIASES.items():
+            column = _find_column(df, aliases)
+            if column is None or pd.to_numeric(df[column], errors='coerce').notna().sum() == 0:
+                raise ValueError(f'Telemetry requires a numeric sensor column for {canonical}.')
+            quality['imputed_sensor_cells'][canonical] = int(pd.to_numeric(df[column], errors='coerce').isna().sum())
             raw_values[canonical] = _filled_numeric_series(df, aliases).reset_index(drop=True)
         raw_values['control_baseline'] = rng.normal(0.0, 1.0, len(df))
 
         covariates = pd.DataFrame(index=range(len(df)))
         for canonical, aliases in COVARIATE_ALIASES.items():
+            if _find_column(df, aliases) is None:
+                quality['defaulted_covariates'].append(canonical)
             covariates[canonical] = _filled_numeric_series(df, aliases).reset_index(drop=True)
+        if not np.isfinite(raw_values.to_numpy()).all() or not np.isfinite(covariates.to_numpy()).all():
+            raise ValueError('Telemetry sensor and covariate values must be finite.')
 
         fields = cls._map_to_grid(raw_values, field_res=field_res, rng=rng)
-        return cls(fields=fields, timestamps=timestamps, raw_values=raw_values, covariates=covariates, source=source)
+        return cls(fields=fields, timestamps=timestamps, raw_values=raw_values, covariates=covariates,
+                   source=source, quality_report=quality)
 
     @classmethod
     def from_null_control(
@@ -416,9 +458,9 @@ class TelemetryTargetField:
         df = pd.DataFrame(
             {
                 'timestamp': pd.date_range('1970-01-01', periods=frame_count, freq='min', tz='UTC'),
-                'em_rf': np.zeros(frame_count),
-                'optical_ir': np.zeros(frame_count),
-                'reg_variance': np.zeros(frame_count),
+                'em_rf': rng.normal(size=frame_count),
+                'optical_ir': rng.normal(size=frame_count),
+                'reg_variance': rng.normal(size=frame_count),
             }
         )
         return cls.from_dataframe(df, field_res=field_res, rng=rng, source=source)
@@ -476,6 +518,7 @@ class TelemetryTargetField:
             raw_values=raw_values,
             covariates=self.covariates.copy(),
             source=f'{self.source}:control-only',
+            quality_report={'generated_control': True, 'source_quality': self.quality_report},
         )
 
     def reg_variance_deviation(self, frame: int, window: int = 50) -> float:
@@ -504,9 +547,12 @@ class PerformanceMetrics:
         self.env_history: list[float] = []
         self.discovery_rate_history: list[int] = []
         self.coherence_frames: list[int] = []
+        self.edge_counts: dict[str, int] = defaultdict(int)
 
-    def log_discovery(self, agent_type: str) -> None:
+    def log_discovery(self, agent_type: str, edge: tuple[str, str] | None = None) -> None:
         self.type_counts[agent_type] += 1
+        if edge is not None:
+            self.edge_counts['--'.join(sorted(edge))] += 1
 
     def log_frame(self, frame: int, discoveries: int, env_factor: float, is_coherence: bool) -> None:
         self.env_history.append(env_factor)
@@ -617,12 +663,15 @@ class Agent:
         if len(self.memory) < CFG.CORR_WINDOW:
             return []
         data = np.array([o.values for o in self.memory[-CFG.CORR_WINDOW :]], dtype='float64')
+        centered = data - data.mean(axis=0)
+        norms = np.linalg.norm(centered, axis=0)
+        denominator = np.outer(norms, norms)
+        correlations = np.divide(centered.T @ centered, denominator,
+                                 out=np.zeros_like(denominator), where=denominator > 1e-24)
         discs: list[dict[str, Any]] = []
         for i in range(CFG.CHANNELS):
             for j in range(i + 1, CFG.CHANNELS):
-                r = float(np.corrcoef(data[:, i], data[:, j])[0, 1])
-                if math.isnan(r):
-                    continue
+                r = float(np.clip(correlations[i, j], -1.0, 1.0))
                 if abs(r) > threshold:
                     discs.append({'edge': (f'ch{i}', f'ch{j}'), 'pearson_r': r, 'confidence': abs(r), 'operator_type': self.type})
         return discs
@@ -630,7 +679,7 @@ class Agent:
 class LongitudinalMetricsRecorder:
     def __init__(self, output_dir: Path = DEFAULT_METRICS_DIR, run_id: str | None = None) -> None:
         self.output_dir = Path(output_dir)
-        self.run_id = run_id or datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        self.run_id = run_id or f'{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}_{uuid4().hex[:8]}'
         self.rows: list[dict[str, Any]] = []
 
     def log_frame(
@@ -690,7 +739,7 @@ class LongitudinalMetricsRecorder:
         return csv_path, metadata_path
 
 
-def evolve_fields(F: Any, t: int, env_factor: float, env_mod: EnvironmentalModerators) -> Any:
+def evolve_fields(F: Any, t: int, env_factor: float, env_mod: EnvironmentalModerators, coupled: bool = True) -> Any:
     Fk = fft_rfft(F)
     for ci in range(F.shape[0]):
         Fk[ci] *= xp.exp(
@@ -703,8 +752,9 @@ def evolve_fields(F: Any, t: int, env_factor: float, env_mod: EnvironmentalModer
             * env_factor
         )
     F = ifft_irfft(Fk, s=(CFG.FIELD_RES, CFG.FIELD_RES))
-    F[0] += 0.045 * F[1] * env_factor
-    if env_mod.is_coherence_active(t):
+    if coupled:
+        F[0] += 0.045 * F[1] * env_factor
+    if coupled and env_mod.is_coherence_active(t):
         F[3] = 0.7 * F[3] + 0.3 * F[2]
     return 0.92 * F + 0.08 * xp.tanh(F * 4.0)
 
@@ -715,7 +765,8 @@ def build_simulation_state(
     import networkx as nx
 
     agents = [Agent(i, CFG.AGENT_TYPES[i % 3]) for i in range(CFG.AGENTS)]
-    graph = nx.DiGraph()
+    graph = nx.Graph()
+    graph.add_nodes_from(f'ch{i}' for i in range(CFG.CHANNELS))
     conf_map: dict[str, float] = defaultdict(float)
     metrics = PerformanceMetrics()
     if target_field is None:
@@ -755,43 +806,42 @@ def _synthetic_sensor_ratios(F_cpu: np.ndarray) -> dict[str, float]:
         'optical_ir_short_long': float(np.mean(np.abs(F_cpu[1])) / baseline),
     }
 
-def run_simulation(
-    target_field: TelemetryTargetField | None = None,
-    preset: str = 'synthetic',
-    recorder: LongitudinalMetricsRecorder | None = None,
-    calibrated_threshold: float | None = None,
-    live: bool = False,
-    live_dashboard: LiveDashboard | None = None,
-    is_notebook: bool = False,
-) -> SimulationArtifacts:
-    import matplotlib.pyplot as plt
-    import networkx as nx
-    from matplotlib import gridspec
-    from matplotlib.animation import FuncAnimation
+class SimulationEngine:
+    """Sequential simulation independent of visualization.
 
-    plt.rcParams['animation.embed_limit'] = 200
-    plt.style.use('dark_background')
-    fig = plt.figure(figsize=(16, 9))
-    gs = gridspec.GridSpec(2, 3)
-    ax_graph = fig.add_subplot(gs[:, 1:])
-    ax_field = fig.add_subplot(gs[0, 0])
-    ax_stats = fig.add_subplot(gs[1, 0])
+    A duplicate request for the current frame is idempotent. Earlier or skipped
+    frames are rejected. Configure CFG before construction and keep it unchanged
+    until the run completes; engines currently run sequentially, not concurrently.
+    """
 
-    agents, graph, conf_map, metrics, env_mod, F = build_simulation_state(target_field)
-    frames_to_render = CFG.FRAMES if target_field is None else min(CFG.FRAMES, target_field.frame_count)
+    def __init__(self, target_field=None, recorder=None, calibrated_threshold=None,
+                 live_dashboard=None, coupled=True):
+        self.target_field = target_field
+        self.recorder = recorder
+        self.calibrated_threshold = calibrated_threshold
+        self.live_dashboard = live_dashboard
+        self.coupled = coupled
+        self.agents, self.graph, self.conf_map, self.metrics, self.env_mod, self.F = build_simulation_state(target_field)
+        self.frame_count = CFG.FRAMES if target_field is None else min(CFG.FRAMES, target_field.frame_count)
+        self.current_frame = -1
+        self.snapshot = None
 
-    if live_dashboard is None and live:
-        live_dashboard = LiveDashboard(total_frames=frames_to_render, enabled=True, is_notebook=is_notebook)
-
-    def update(frame: int) -> None:
-        nonlocal F
-
+    def step(self, frame: int) -> dict[str, Any]:
+        if frame == self.current_frame and self.snapshot is not None:
+            return self.snapshot
+        if frame != self.current_frame + 1 or not 0 <= frame < self.frame_count:
+            raise ValueError('Frames must advance sequentially within the configured run.')
+        target_field, recorder = self.target_field, self.recorder
+        calibrated_threshold, live_dashboard = self.calibrated_threshold, self.live_dashboard
+        agents, graph, conf_map, metrics, env_mod, F = (
+            self.agents, self.graph, self.conf_map, self.metrics, self.env_mod, self.F
+        )
         if target_field is None:
             env_mod.update(frame)
             modulation = env_mod.get_modulation(frame)
-            threshold = calibrated_threshold or env_mod.discovery_threshold
+            threshold = env_mod.discovery_threshold if calibrated_threshold is None else calibrated_threshold
             confidence_decay = env_mod.confidence_decay
-            F = evolve_fields(F, frame, modulation, env_mod)
+            F = evolve_fields(F, frame, modulation, env_mod, coupled=self.coupled)
             F_cpu = cp.asnumpy(F) if on_gpu else F
             timestamp = pd.Timestamp('1970-01-01', tz='UTC') + pd.Timedelta(minutes=frame)
             moderator_values = env_mod.snapshot()
@@ -803,7 +853,7 @@ def run_simulation(
             covariates = target_field.covariates_for_frame(frame)
             env_mod.update(frame, covariates)
             modulation = env_mod.get_modulation(frame)
-            threshold = calibrated_threshold or env_mod.discovery_threshold
+            threshold = env_mod.discovery_threshold if calibrated_threshold is None else calibrated_threshold
             confidence_decay = env_mod.confidence_decay
             timestamp = target_field.timestamp_for_frame(frame)
             moderator_values = env_mod.snapshot()
@@ -820,7 +870,7 @@ def run_simulation(
                 key = f'{u}->{v}'
                 conf_map[key] = max(conf_map[key], discovery['confidence'])
                 graph.add_edge(u, v, weight=conf_map[key])
-                metrics.log_discovery(agent.type)
+                metrics.log_discovery(agent.type, discovery['edge'])
                 frame_discoveries.append(discovery)
 
         for key in list(conf_map.keys()):
@@ -830,6 +880,9 @@ def run_simulation(
                 if graph.has_edge(u, v):
                     graph.remove_edge(u, v)
                 del conf_map[key]
+            else:
+                u, v = key.split('->')
+                graph[u][v]['weight'] = conf_map[key]
 
         metrics.log_frame(frame, len(frame_discoveries), modulation, env_mod.is_coherence_active(frame))
         operator_density = len(agents) / float(CFG.FIELD_RES * CFG.FIELD_RES)
@@ -845,7 +898,7 @@ def run_simulation(
                 sensor_anomaly_ratios=sensor_ratios,
             )
 
-        last_edge = f"{frame_discoveries[-1]['edge'][0]}->{frame_discoveries[-1]['edge'][1]}" if frame_discoveries else None
+        last_edge = '--'.join(frame_discoveries[-1]['edge']) if frame_discoveries else None
         if live_dashboard is not None:
             live_dashboard.update(
                 frame=frame,
@@ -858,14 +911,81 @@ def run_simulation(
                 last_edge=last_edge,
             )
 
+        self.F = F
+        self.current_frame = frame
+        self.snapshot = {
+            'field': F_cpu, 'modulation': modulation, 'reg_deviation': reg_deviation,
+            'sensor_ratios': sensor_ratios,
+        }
+        return self.snapshot
+
+    def run(self) -> 'SimulationEngine':
+        for frame in range(self.current_frame + 1, self.frame_count):
+            self.step(frame)
+        return self
+
+
+def run_simulation(
+    target_field: TelemetryTargetField | None = None,
+    preset: str = 'synthetic',
+    recorder: LongitudinalMetricsRecorder | None = None,
+    calibrated_threshold: float | None = None,
+    live: bool = False,
+    live_dashboard: LiveDashboard | None = None,
+    is_notebook: bool = False,
+) -> SimulationArtifacts:
+    import matplotlib.pyplot as plt
+    import networkx as nx
+    from matplotlib import gridspec
+    from matplotlib.animation import FuncAnimation
+
+    plt.rcParams['animation.embed_limit'] = 200
+    plt.style.use('dark_background')
+    fig = plt.figure(figsize=(14, 8), facecolor='#081b20')
+    gs = gridspec.GridSpec(2, 2, width_ratios=(1, 1.5), height_ratios=(1, 0.65),
+                          left=0.05, right=0.96, top=0.84, bottom=0.08, hspace=0.32, wspace=0.2)
+    ax_graph = fig.add_subplot(gs[:, 1])
+    ax_field = fig.add_subplot(gs[0, 0])
+    ax_stats = fig.add_subplot(gs[1, 0])
+    fig.text(0.05, 0.94, 'IONS-X / DEEP EMERGENCE LAB', fontsize=20, weight='bold', color='#b9f5e8')
+    fig.text(0.05, 0.89, f'{preset.upper()}  ·  seed {CFG.SEED}  ·  {CFG.AGENTS} operators  ·  '
+             'exploratory associations', fontsize=11, color='#93b5b5')
+    fig.text(0.05, 0.025, 'Edge width: decayed |Pearson r|  /  Correlation does not establish causal direction.',
+             fontsize=10, color='#93b5b5')
+
+    frames_to_render = CFG.FRAMES if target_field is None else min(CFG.FRAMES, target_field.frame_count)
+
+    if live_dashboard is None and live:
+        live_dashboard = LiveDashboard(total_frames=frames_to_render, enabled=True, is_notebook=is_notebook)
+
+    engine = SimulationEngine(target_field, recorder, calibrated_threshold, live_dashboard)
+    graph, metrics = engine.graph, engine.metrics
+    positions = nx.circular_layout(graph)
+
+    def update(frame: int) -> None:
+
+        snapshot = engine.step(frame)
+        F_cpu = snapshot['field']
+        modulation = snapshot['modulation']
+        reg_deviation = snapshot['reg_deviation']
+        sensor_ratios = snapshot['sensor_ratios']
+
         ax_field.clear()
         ax_field.imshow(F_cpu[0], cmap='magma')
-        ax_field.set_title('Channel 0: EM/RF Telemetry')
+        ax_field.set_title(f'CH 0 / EM-RF field  ·  frame {frame + 1}/{frames_to_render}', fontsize=12)
         ax_field.axis('off')
 
         ax_graph.clear()
-        nx.draw(graph, ax=ax_graph, with_labels=True, node_color='orange', edge_color='cyan')
-        ax_graph.set_title('Emergent ATOM Discoveries')
+        ax_graph.set_facecolor('#081b20')
+        labels = {'ch0': 'CH 0\nEM / RF', 'ch1': 'CH 1\nOptical / IR',
+                  'ch2': 'CH 2\nREG proxy', 'ch3': 'CH 3\nReference'}
+        nx.draw_networkx(graph, pos=positions, labels=labels, ax=ax_graph, with_labels=True,
+                node_color='#39c5bb', node_size=2700, font_size=10, font_weight='bold',
+                edge_color='#91e1da', width=[4 * d['weight'] for _, _, d in graph.edges(data=True)])
+        ax_graph.set_xlim(-1.5, 1.5)
+        ax_graph.set_ylim(-1.5, 1.5)
+        ax_graph.set_axis_off()
+        ax_graph.set_title(f'ASSOCIATION MAP  /  {graph.number_of_edges()} active pairs', fontsize=12)
 
         ax_stats.clear()
         ax_stats.axis('off')
@@ -873,25 +993,29 @@ def run_simulation(
             0.05,
             0.75,
             (
-                f'Total Cumulative Discoveries: {metrics.total_discoveries}\n'
-                f'Active Environmental Coherence Factor: {modulation:.3f}\n'
-                f'REG Variance Deviation: {reg_deviation:.3f}\n'
-                'Sensor Anomaly Multi-scale Ratios:\n'
-                f"  EM/RF: {sensor_ratios['em_rf_short_long']:.3f}\n"
-                f"  Optical/IR: {sensor_ratios['optical_ir_short_long']:.3f}"
+                f'Association detections     {metrics.total_discoveries:,}\n'
+                f'Unique channel pairs       {len(metrics.edge_counts)} / 6\n'
+                f'Moderator factor           {modulation:.3f}\n'
+                f'REG diagnostic             {reg_deviation:.3f}\n'
+                f"EM / optical diagnostics   {sensor_ratios['em_rf_short_long']:.2f} / "
+                f"{sensor_ratios['optical_ir_short_long']:.2f}"
             ),
-            fontsize=12,
+            fontsize=10,
+            fontfamily='monospace',
+            linespacing=1.7,
             va='top',
         )
-        ax_stats.set_title(f'Run Stats ({preset})')
+        ax_stats.set_title('OBSERVATION LOG  /  repeated detections are not independent', fontsize=9)
 
-    animation = FuncAnimation(fig, update, frames=frames_to_render, interval=50, repeat=False)
+    animation = FuncAnimation(fig, update, init_func=lambda: (), frames=frames_to_render,
+                              interval=50, repeat=False, cache_frame_data=False)
     return SimulationArtifacts(
         animation=animation,
         recorder=recorder,
         calibration_threshold=calibrated_threshold,
         metrics=metrics,
         dashboard=live_dashboard,
+        engine=engine,
     )
 
 def _prepare_target_and_threshold(args: argparse.Namespace) -> tuple[TelemetryTargetField | None, float | None]:
@@ -916,9 +1040,87 @@ def _prepare_target_and_threshold(args: argparse.Namespace) -> tuple[TelemetryTa
     return target, None
 
 
+def experiment_passport(input_path: Path | None = None) -> dict[str, Any]:
+    """Capture the effective configuration, implementation and input identities."""
+    return {
+        'configuration': {key: getattr(CFG, key) for key in DEFAULT_CONFIG},
+        'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'input_sha256': hashlib.sha256(input_path.read_bytes()).hexdigest() if input_path is not None else None,
+        'python': platform.python_version(),
+        'dependencies': {name: version(name) for name in ('numpy', 'pandas', 'networkx', 'matplotlib')},
+        'backend': 'GPU' if on_gpu else 'CPU',
+        'interpretation': 'Exploratory associations; confidence is absolute Pearson r, not a probability or causal evidence.',
+        'inactive_configuration': ['LAG_FRAMES', 'SAMPLE_PER_FRAME', 'GEOMAG_INFLUENCE', 'LUNAR_CYCLE', 'COHERENCE_BOOST'],
+    }
+
+
+def write_report(path: Path, payload: Mapping[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding='utf-8')
+    return path
+
+
+def run_control_study(repeats: int, seed: int) -> dict[str, Any]:
+    """Paired synthetic coupling ablation; repetitions, not agents, are the units.
+
+    Both arms replay the same random draws. Only the two explicit cross-channel
+    coupling terms differ. This is a sensitivity benchmark, not a significance
+    test or a validated null model for empirical telemetry.
+    """
+    if repeats < 1 or seed < 0 or seed + repeats > 2**32:
+        raise ValueError('Paired seeds must fit in the RandomState seed range.')
+    if CFG.FRAMES < CFG.CORR_WINDOW:
+        raise ValueError('Control studies require at least CORR_WINDOW frames to evaluate associations.')
+    saved_seed, saved_state = CFG.SEED, rng.get_state()
+    rows = []
+    pairs = [f'ch{i}--ch{j}' for i in range(CFG.CHANNELS) for j in range(i + 1, CFG.CHANNELS)]
+    try:
+        for run_seed in range(seed, seed + repeats):
+            arms = {}
+            for name, coupled in (('coupled', True), ('uncoupled', False)):
+                set_seed(run_seed)
+                engine = SimulationEngine(coupled=coupled).run()
+                arms[name] = {
+                    'total_discoveries': engine.metrics.total_discoveries,
+                    'edge_counts': {pair: engine.metrics.edge_counts.get(pair, 0) for pair in pairs},
+                    'coherence_frames': list(engine.metrics.coherence_frames),
+                }
+            rows.append({'seed': run_seed, **arms,
+                         'paired_difference': arms['coupled']['total_discoveries'] - arms['uncoupled']['total_discoveries']})
+    finally:
+        CFG.SEED = saved_seed
+        rng.set_state(saved_state)
+    opportunities = CFG.AGENTS * (CFG.FRAMES - CFG.CORR_WINDOW + 1)
+    differences = [row['paired_difference'] for row in rows]
+    return {
+        'schema_version': 1,
+        'kind': 'paired_synthetic_coupling_ablation',
+        'passport': experiment_passport(),
+        'repetitions': repeats,
+        'starting_seed': seed,
+        'opportunities_per_pair_per_run': opportunities,
+        'injected_associations': {'ch0--ch1': 'continuous', 'ch2--ch3': 'coherence windows only'},
+        'mean_paired_difference': float(np.mean(differences)),
+        'paired_difference_range': [min(differences), max(differences)],
+        'association_rates': {
+            pair: {arm: float(np.mean([row[arm]['edge_counts'][pair] / opportunities for row in rows]))
+                   for arm in ('coupled', 'uncoupled')}
+            for pair in pairs
+        },
+        'runs': rows,
+        'limitations': [
+            'No p-values: overlapping windows and agents observing one field are dependent.',
+            'The uncoupled arm preserves field evolution, moderators, agent paths and initial random draws.',
+            'This measures detector sensitivity to injected coupling, not causal discovery on real-world data.',
+            'Operator types are labels for one shared detector; lagged detection is not implemented.',
+        ],
+    }
+
+
 def build_run_summary(result: RunResult, metrics: 'PerformanceMetrics') -> dict[str, Any]:
     """Assemble the lightweight per-run summary written beside the animation."""
     return {
+        'schema_version': 2,
         'output_path': str(result.output_path),
         'preset': result.preset,
         'experiment': result.experiment,
@@ -928,6 +1130,10 @@ def build_run_summary(result: RunResult, metrics: 'PerformanceMetrics') -> dict[
         'seed': result.seed,
         'backend': 'GPU' if result.on_gpu else 'CPU',
         'total_discoveries': metrics.total_discoveries,
+        'unique_associations': len(metrics.edge_counts),
+        'association_counts': dict(metrics.edge_counts),
+        'frames_processed': len(metrics.discovery_rate_history),
+        'passport': result.passport,
         'discoveries_by_operator_type': dict(metrics.type_counts),
         'coherence_frames': list(metrics.coherence_frames),
         'coherence_frame_count': len(metrics.coherence_frames),
@@ -942,31 +1148,56 @@ def write_metrics_sidecar(result: RunResult, metrics: 'PerformanceMetrics') -> P
     summary_path = result.output_path.with_suffix('.metrics.json')
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary = build_run_summary(result, metrics)
-    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding='utf-8')
+    write_report(summary_path, summary)
     return summary_path
 
 
 def main(argv: Sequence[str] | None = None) -> RunResult:
     args = parse_args(argv)
     apply_runtime_options(args)
+    if args.control_study:
+        report = run_control_study(args.control_study, CFG.SEED)
+        write_report(args.output, report)
+        print(f'Paired control study complete: {args.control_study} seeds. Report: {args.output}')
+        return RunResult(output_path=args.output, frames=CFG.FRAMES, agents=CFG.AGENTS,
+                         field_res=CFG.FIELD_RES, on_gpu=on_gpu, seed=CFG.SEED,
+                         experiment=args.experiment or ('quick' if args.quick else 'balanced'),
+                         summary_path=args.output, passport=report['passport'])
     target_field, calibration_threshold = _prepare_target_and_threshold(args)
-    recorder = LongitudinalMetricsRecorder() if args.preset in {'baseline', 'empirical'} else None
+    if target_field is not None:
+        CFG.FRAMES = min(CFG.FRAMES, target_field.frame_count)
+    effective_preset = 'empirical' if args.input_data is not None and args.preset == 'synthetic' else args.preset
+    passport = experiment_passport(args.input_data)
+    if target_field is not None:
+        passport['telemetry_quality'] = target_field.quality_report
+    recorder = LongitudinalMetricsRecorder(output_dir=args.output.parent) if effective_preset in {'baseline', 'empirical'} else None
 
-    artifacts = run_simulation(
-        target_field=target_field,
-        preset=args.preset,
-        recorder=recorder,
-        calibrated_threshold=calibration_threshold,
-        live=getattr(args, 'live', False),
-        is_notebook=getattr(args, 'show', False),
-    )
-    output_path = save_animation(artifacts.animation, args.output, fps=args.fps, dashboard=artifacts.dashboard)
+    if args.headless:
+        dashboard = LiveDashboard(CFG.FRAMES, enabled=args.live)
+        try:
+            engine = SimulationEngine(target_field, recorder, calibration_threshold, dashboard).run()
+        finally:
+            dashboard.close()
+        artifacts = SimulationArtifacts(animation=None, recorder=recorder, calibration_threshold=calibration_threshold,
+                                        metrics=engine.metrics, engine=engine)
+        output_path = args.output
+    else:
+        artifacts = run_simulation(
+            target_field=target_field,
+            preset=effective_preset,
+            recorder=recorder,
+            calibrated_threshold=calibration_threshold,
+            live=getattr(args, 'live', False),
+            is_notebook=getattr(args, 'show', False),
+        )
+        output_path = save_animation(artifacts.animation, args.output, fps=args.fps, dashboard=artifacts.dashboard)
 
     metrics_path: Path | None = None
     metadata_path: Path | None = None
     if artifacts.recorder is not None:
         metadata = {
-            'preset': args.preset,
+            'preset': effective_preset,
+            'passport': passport,
             'frames': CFG.FRAMES,
             'agents': CFG.AGENTS,
             'field_res': CFG.FIELD_RES,
@@ -978,9 +1209,10 @@ def main(argv: Sequence[str] | None = None) -> RunResult:
         metrics_path, metadata_path = artifacts.recorder.save_summary(metadata)
 
     if args.show:
-        from IPython.display import HTML, display
+        from IPython.display import HTML, Image, display
 
-        display(HTML(output_path.read_text(encoding='utf-8')))
+        display(Image(filename=str(output_path)) if output_path.suffix.lower() == '.gif'
+                else HTML(output_path.read_text(encoding='utf-8')))
 
     result = RunResult(
         output_path=output_path,
@@ -989,16 +1221,19 @@ def main(argv: Sequence[str] | None = None) -> RunResult:
         field_res=CFG.FIELD_RES,
         on_gpu=on_gpu,
         seed=CFG.SEED,
-        preset=args.preset,
-        experiment=getattr(args, 'experiment', None) or 'balanced',
+        preset=effective_preset,
+        experiment=getattr(args, 'experiment', None) or ('quick' if args.quick else 'balanced'),
         metrics_path=metrics_path,
         metadata_path=metadata_path,
         calibration_threshold=artifacts.calibration_threshold,
+        passport=passport,
     )
 
     # Write the lightweight metrics summary beside the animation. The animation's
     # frame updates ran during save_animation above, so metrics are populated now.
-    if artifacts.metrics is not None and not getattr(args, 'no_metrics_sidecar', False):
+    if args.headless:
+        result.summary_path = write_report(output_path, build_run_summary(result, artifacts.metrics))
+    elif artifacts.metrics is not None and not getattr(args, 'no_metrics_sidecar', False):
         result.summary_path = write_metrics_sidecar(result, artifacts.metrics)
 
     message = (

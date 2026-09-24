@@ -60,10 +60,16 @@ jobs:
           python -m pip install -r requirements.txt
       - name: Render a quick animation and metrics sidecar
         run: python ions_x_deep_emergence.py --quick --frames 8 --agents 20 --field-res 32 --output outputs/ci_smoke.html
+      - name: Run headless and paired control experiments
+        run: |
+          python ions_x_deep_emergence.py --quick --headless --frames 8 --agents 4 --field-res 8 --output outputs/headless.json
+          python ions_x_deep_emergence.py --quick --control-study 2 --agents 4 --field-res 8 --output outputs/control-study.json
       - name: Assert artifacts exist
         run: |
           test -s outputs/ci_smoke.html
           test -s outputs/ci_smoke.metrics.json
+          test -s outputs/headless.json
+          test -s outputs/control-study.json
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

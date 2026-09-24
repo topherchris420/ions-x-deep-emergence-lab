@@ -1,254 +1,161 @@
-
-
 # IONS-X Deep Emergence Lab
 
-> A GPU-optional, multi-agent sandbox for watching causal hints emerge inside coupled dynamical fields.
+> A reproducible sandbox for asking whether collective sensing can recover structure in a changing field—and what remains when that structure is removed.
 
 [![CI](https://github.com/topherchris420/ions-x-deep-emergence-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/topherchris420/ions-x-deep-emergence-lab/actions/workflows/ci.yml)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-![IONS-X Deep Emergence Lab demo](docs/assets/demo.gif)
+![Actual simulation: field, association map, and observation log](docs/assets/demo.gif)
 
-*A real run: autonomous operators sample an evolving 4-channel field (left) while the emergent graph of discovered channel relationships forms and decays (right). Generated with `ions-x --frames 80 --agents 140 --field-res 64 --output docs/assets/demo.gif`.*
+*Preview: actual 80-frame run with 40 agents on a 32×32 field, seed 42.*
 
----
+IONS-X places moving sensing agents inside a four-channel field. Agents retain observations, measure rolling correlations, and contribute to a shared, decaying association graph. You can watch a run, analyze sensor CSVs, or run paired synthetic experiments without rendering a single frame.
 
-**IONS-X Deep Emergence Lab** is a Python simulation environment for exploring how causal hints and nonlocal structure emerge inside coupled dynamical fields.
+**The useful question is not simply “did a pattern appear?” It is “does the detector respond differently when the injected coupling is absent?”** The paired control study makes that question executable.
 
-It creates a 4-channel target field, deploys autonomous sensing operators across the spatial grid, modulates environmental parameters over time, and reconstructs the emergent graph of channel relationships discovered by the collective. The goal is to provide researchers and builders with a **repeatable, deterministic sandbox** for testing computational hypotheses about field dynamics, collective sensing, and signal discovery.
+This is exploratory simulation software from Vers3Dynamics. Its outputs are associations, not demonstrations of causality, consciousness, or nonlocal effects. “Confidence” in legacy exports means absolute Pearson correlation, not statistical confidence. See [experiment design and limitations](docs/experiment-design.md).
 
----
-
-## What You See
-
-Running the simulation generates an interactive HTML animation (or shareable GIF) with three synchronized views:
-
-- **Target Field:** Real-time spatial heatmap of evolving field channels (spectral diffusion in synthetic mode; spatialized telemetry in empirical mode).
-- **Emergent Graph:** Directed network graph tracking discovered channel relationships as confidence weights strengthen and decay.
-- **Live Run Stats:** Cumulative discoveries, active environmental coherence factor, REG variance deviation, and multi-scale sensor anomaly ratios.
-
----
-
-## Quickstart
-
-### 1. Install & Run via `ions-x` CLI
+## Start with one experiment
 
 ```bash
 git clone https://github.com/topherchris420/ions-x-deep-emergence-lab.git
 cd ions-x-deep-emergence-lab
-
-# Create and activate virtual environment
 python -m venv .venv
-source .venv/bin/activate   # On Windows: .venv\Scripts\Activate.ps1
-
-# Install in editable mode
+source .venv/bin/activate     # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install -e .
 
-# Run a quick simulation with live console streaming
 ions-x --quick --seed 42 --live
 ```
 
-Default output is saved to:
-```text
-outputs/latest.html
-outputs/latest.metrics.json
-```
-Open `outputs/latest.html` in any web browser to view the interactive animation.
+Open `outputs/latest.html`. The adjacent `outputs/latest.metrics.json` records detections, unique channel pairs, the effective configuration, code identity, dependency versions, and seed.
 
-### 2. Windows PowerShell One-Liner
+The animation shows the channel-0 field, a stable **undirected** graph, and the observation log. Edge width follows the current decayed correlation weight. The renderer and headless mode use the same simulation engine; rendering does not add extra observations.
 
-```powershell
-py -m venv .venv; .\.venv\Scripts\Activate.ps1; py -m pip install -e .; ions-x --quick --seed 42 --live; start outputs\latest.html
+## Ask what survives the control
+
+```bash
+ions-x --quick --control-study 8 --frames 100 --agents 40 --field-res 32 \
+  --seed 42 --output outputs/control-study.json
 ```
 
----
+For each seed, the engine runs two arms:
 
-## Python API Usage
+| Coupled field | Uncoupled field |
+| --- | --- |
+| Channel 1 contributes to channel 0 continuously. | This contribution is disabled. |
+| Channel 2 contributes to channel 3 during coherence windows. | This contribution is disabled. |
+| Seeded initialization, diffusion, nonlinear dynamics, moderator events, and agent movements. | The same initialization, dynamics, events, and movements. |
 
-You can import and run simulations directly inside your own Python scripts or Jupyter notebooks:
+The JSON report contains each paired run, per-pair detection rates, and the mean and range of paired differences. A detection rate is detections divided by eligible agent-windows for that pair. It is **not a probability of a true relationship**. Agents and overlapping windows are dependent; the report deliberately does not turn their count into a sample size for a significance test.
+
+A [checked eight-seed example](docs/experiment-design.md#checked-example-eight-paired-seeds) includes the complete report and observed detection rates.
+
+This is a coupling ablation benchmark for the synthetic model. It is distinct from `--preset baseline`, which analyzes independent Gaussian channel series with a heuristic threshold. Neither is a validated null model for arbitrary empirical data.
+
+## Run without rendering
+
+```bash
+ions-x --quick --headless --frames 200 --seed 42 --output outputs/run.json
+```
+
+Headless mode writes one JSON report and skips Matplotlib rendering. It is useful for batch work and reproducibility checks. The report distinguishes repeated detections from unique associations and records the actual number of processed frames.
 
 ```python
-import ions_x_deep_emergence as ions_x
+import ions_x_deep_emergence as lab
 
-# Run an experiment programmatically
-result = ions_x.main([
-    "--experiment", "arv",
-    "--seed", "42",
-    "--frames", "100",
-    "--output", "outputs/my_experiment.html",
+result = lab.main([
+    "--quick", "--headless", "--frames", "100",
+    "--seed", "42", "--output", "outputs/experiment.json",
 ])
-
-print(f"Output saved to: {result.output_path}")
-print(f"Metrics sidecar: {result.summary_path}")
-print(f"Calibration threshold: {result.calibration_threshold}")
+print(result.summary_path)
 ```
 
----
+CLI and `main()` calls reset configuration before applying options, so a previous experiment cannot silently change the next one. The lower-level `SimulationEngine` API uses the module configuration and RNG: configure once, then run sequentially. Concurrent engines are not supported.
 
-## Command-Line Options
+## Analyze sensor telemetry
 
 ```bash
-ions-x --quick --seed 42 --live --output outputs/demo.html
-ions-x --experiment arv                               # Associative Remote Viewing preset
-ions-x --experiment coherence --seed 100              # Environmental coherence focus
-ions-x --frames 120 --agents 100 --field-res 64       # Custom parameter run
-ions-x --quick --output outputs/demo.gif              # Shareable GIF animation
-ions-x --preset empirical --input-data telemetry.csv  # Empirical CSV study
-ions-x --preset baseline --input-data telemetry.csv   # Baseline control calibration
-ions-x --quick --show                                 # Inline display in Jupyter notebooks
+ions-x --preset empirical --input-data telemetry.csv --headless \
+  --output outputs/telemetry.json
 ```
 
-| Option | Description | Default |
-| :--- | :--- | :--- |
-| `--quick` | Smaller, faster configuration for demos and quick testing. | `False` |
-| `--experiment NAME` | Start from a named parameter bundle (`balanced`, `quick`, `arv`, `coherence`, `dense-agents`). | `balanced` |
-| `--seed N` | Set random seed for deterministic, 100% reproducible runs. | `42` |
-| `--live` | Stream metrics and telemetry live in console / notebook during render. | `False` |
-| `--frames N` | Number of animation frames to simulate and render. | `500` (`60` in quick) |
-| `--agents N` | Number of autonomous sampling operators. | `300` (`50` in quick) |
-| `--field-res N` | 2D field spatial grid resolution (`N x N`). | `128` (`64` in quick) |
-| `--preset MODE` | Run mode: `synthetic` (default), `baseline` (null control), or `empirical` (CSV). | `synthetic` |
-| `--input-data PATH` | CSV telemetry file path for empirical/baseline modes. | `None` |
-| `--output PATH` | Output file path (`.html` for interactive animation, `.gif` for video). | `outputs/latest.html` |
-| `--fps N` | Frame rate when exporting a `.gif` file. | `20` |
-| `--no-metrics-sidecar` | Suppress writing the `<output>.metrics.json` sidecar summary. | `False` |
-| `--show` | Render inline when executing inside an IPython / Jupyter environment. | `False` |
+| Channel | Canonical input | Selected aliases |
+| --- | --- | --- |
+| 0: EM / RF | `em_rf` | `magnetometer`, `rf_noise`, `rf_spectrum_noise`, `channel_0` |
+| 1: Optical / IR | `optical_ir` | `pixel_variance`, `sky_pixel_variance`, `ir_anomaly`, `channel_1` |
+| 2: REG proxy | `consciousness_proxy` | `reg_variance`, `reg_entropy`, `egg_variance`, `channel_2` |
+| 3: Reference | Generated locally | Independent Gaussian series in empirical mode |
 
----
+All three measured channels must contain numeric data. Missing or wholly unusable channels and infinite sensor/covariate values are rejected. Partial gaps retain the legacy offline forward-fill/backward-fill behavior, with imputed sensor-cell counts in the report. Optional covariates are `kp_index`, `lunar_phase`, `sidereal_time`, and `xray_flux`; absent covariates default to zero and are listed in the report.
 
-## Experiment Presets
+An optional timestamp column accepts `timestamp`, `time`, `datetime`, `date_time`, or `utc_timestamp`. Missing/invalid timestamps are filled, or replaced with a synthetic minute index when none are valid. Input ordering is preserved. Rows are steps; elapsed timestamp gaps do not change the dynamics.
 
-Presets bundle sensible hyperparameter configurations for specific research scenarios. Explicit CLI flags always override preset defaults.
+Empirical processing spatializes standardized series onto synthetic bases. It is an **offline exploration**, with full-series normalization and backward filling that can use future rows. It is not a causal online estimator. The environmental moderator equations are modeling assumptions, not validated physical relationships.
 
-| `--experiment` | Research Intent | Key Settings |
-| :--- | :--- | :--- |
-| `balanced` | Standard default parameters. | 300 agents, 128x128 field, decay: 0.995, thresh: 0.32 |
-| `quick` | Fast initial runs and demos. | 50 agents, 64x64 field, 60 frames, 4 samples/frame |
-| `arv` | Associative Remote Viewing: long memory, wide lag windows, lower threshold for weak, delayed signals. | Memory: 500, Corr Window: 80, Lags: `[15,30,60,120]`, Thresh: 0.28 |
-| `coherence` | Environmental coherence focus: slower confidence decay allows coherence-boosted structures to accumulate. | 400 agents, Thresh: 0.26, Decay: 0.997 |
-| `dense-agents` | Crowding & operator density studies. | 800 agents on a 96x96 field |
+Runs also export `longitudinal_run_<unique-id>.csv.gz` and `metadata_<unique-id>.json` beside the requested output. Requests longer than the input are clamped to available rows and report the actual frame count. The passport includes the input file's SHA-256 and preprocessing information.
+
+## Choose a configuration
 
 ```bash
-ions-x --experiment coherence --seed 123 --live
-ions-x --experiment dense-agents --frames 120    # Override preset frames
+ions-x --experiment coherence --seed 123 --output outputs/coherence.html
+ions-x --quick --output outputs/demo.gif
+ions-x --preset baseline --headless --frames 100 --output outputs/baseline.json
 ```
 
----
+| Flag | Purpose |
+| --- | --- |
+| `--quick` | 50 agents, 64×64 field, 60 frames; explicit numeric flags override these values. |
+| `--experiment NAME` | `balanced`, `quick`, `arv`, `coherence`, or `dense-agents`. |
+| `--frames N`, `--agents N`, `--field-res N` | Positive integer runtime settings. |
+| `--seed N` | NumPy RandomState seed, 0 through 4294967295. |
+| `--headless` | JSON report without animation. |
+| `--control-study N` | N paired seeds beginning at `--seed`; synthetic only, JSON output. |
+| `--preset MODE` | `synthetic`, `empirical`, or `baseline`. |
+| `--input-data PATH` | CSV telemetry; supplying a CSV without a preset is labeled empirical. |
+| `--output PATH` | `.html` / `.gif` for animation, `.json` for headless or paired study. |
+| `--fps N` | GIF playback frame rate; default 20. |
+| `--live` | Stream progress for individual runs. |
+| `--show` | Display the saved animation in an IPython notebook. |
+| `--no-metrics-sidecar` | Omit the extra animation summary; headless/study JSON remains the primary output. |
 
-## Metrics Sidecar (`.metrics.json`)
+| Experiment | Active differences from balanced |
+| --- | --- |
+| `balanced` | 300 agents, 128×128 field, 500 frames; 50-observation correlation window, threshold 0.32. |
+| `quick` | 50 agents, 64×64 field, 60 frames. |
+| `arv` | Memory 500, window 80, threshold 0.28, 400 frames. Historical preset name; no remote-viewing validation. |
+| `coherence` | 400 agents, threshold 0.26, decay 0.997, 300 frames. |
+| `dense-agents` | 800 agents, 96×96 field, 200 frames. |
 
-Every run automatically produces a lightweight JSON sidecar next to the output file (disable with `--no-metrics-sidecar`):
+`perceiver`, `forecaster`, and `integrator` currently label the **same rolling Pearson detector**. `LAG_FRAMES`, `SAMPLE_PER_FRAME`, and the three legacy moderator toggles do not alter the current engine; the passport lists these inactive settings. No lagged forecasting or distinct operator algorithm is claimed.
 
-```text
-outputs/demo.html
-outputs/demo.metrics.json
+## Architecture
+
+```mermaid
+flowchart TD
+    C["Configuration + seed"] --> E["Simulation engine"]
+    T["Synthetic field or CSV telemetry"] --> E
+    E --> O["Moving operators + rolling memory"]
+    O --> G["Undirected association graph"]
+    G --> R["Animation or JSON report"]
+    E --> R
 ```
 
-```json
-{
-  "backend": "CPU",
-  "calibration_threshold": null,
-  "coherence_frame_count": 3,
-  "coherence_frames": [12, 13, 14],
-  "discoveries_by_operator_type": {
-    "forecaster": 4,
-    "integrator": 3,
-    "perceiver": 5
-  },
-  "discovery_rate_history": [0, 1, 0, 2, 0],
-  "experiment": "balanced",
-  "field_res": 64,
-  "frames": 60,
-  "generated_at": "2026-08-20T17:35:00.000000+00:00",
-  "output_path": "outputs/demo.html",
-  "preset": "synthetic",
-  "seed": 42,
-  "total_discoveries": 12
-}
-```
+The ATOM framing organizes **analyses, targets, operators, and moderators**. The engine owns sequential state advancement; an explicit animation initializer prevents extra frame-zero steps, and duplicate requests for the current frame return its existing snapshot. Metrics, CSV records, and visualization therefore share one frame clock.
 
----
-
-## Longitudinal Empirical Runs
-
-In empirical mode, the lab ingests multi-sensor telemetry from CSV files, spatializes the signals across target field bases, applies real-world environmental moderator scaling, and exports comprehensive discovery logs.
-
-### Accepted Column Schema
-
-| ATOM Channel | Primary Column | Accepted Aliases |
-| :--- | :--- | :--- |
-| **Channel 0: EM/RF** | `em_rf` | `electromagnetic_rf`, `magnetometer`, `rf_noise`, `rf_spectrum_noise`, `channel_0` |
-| **Channel 1: Optical/IR** | `optical_ir` | `optical_ir_anomaly`, `pixel_variance`, `sky_pixel_variance`, `ir_anomaly`, `channel_1` |
-| **Channel 2: Consciousness Proxy** | `reg_variance` | `consciousness_proxy`, `reg_entropy`, `egg_variance`, `raw_entropy`, `channel_2` |
-| **Channel 3: Control Baseline** | Local Gaussian Control | Synthetically generated uncorrelated baseline channel |
-
-Optional environmental covariates include `kp_index`, `lunar_phase`, `sidereal_time`, and `xray_flux`.
-
-### Exported Artifacts
-
-Empirical runs export:
-```text
-outputs/longitudinal_run_[timestamp].csv.gz
-outputs/metadata_[timestamp].json
-```
-
-Each discovery row records timestamp, channel pair, Pearson correlation, confidence score, active moderator values, and operator density.
-
----
-
-## The ATOM Architecture
-
-The simulation is built around the **ATOM** framing used by the IONS-X research program:
-
-```
-┌───────────────────────────────────────────────────────────────┐
-│                      MODERATORS (M)                           │
-│  Geomagnetic (Kp), Lunar Phase, Sidereal Time, Coherence      │
-└──────────────┬────────────────────────────────┬───────────────┘
-               │ Modulates Dynamics             │ Scales Threshold & Decay
-               ▼                                ▼
-┌───────────────────────────────┐      ┌────────────────────────┐
-│         TARGETS (T)           │      │     OPERATORS (O)      │
-│  Coupled 4-Channel 2D Field   │ ───► │  Autonomous Agents     │
-│  (EM/RF, Opt/IR, REG, Ctrl)   │      │  (Sample & Remember)   │
-└───────────────────────────────┘      └───────────┬────────────┘
-                                                   │
-                                                   ▼ Correlate & Detect
-                                       ┌────────────────────────┐
-                                       │     ANALYSES (A)       │
-                                       │  Emergent Relationship │
-                                       │  Graph & Confidence    │
-                                       └────────────────────────┘
-```
-
----
-
-## Guided Notebook
-
-`notebooks/quickstart.ipynb` walks through the field, operators, moderators, and emergent graph in interactive cells using quick settings. It runs top-to-bottom locally or in Google Colab.
-
----
-
-## Development & Testing
+## Reproduce and contribute
 
 ```bash
-# Install development dependencies
-python -m pip install -e .[dev]
-
-# Run linter
-ruff check .
-
-# Run complete test suite (28 deterministic tests)
-python -m pytest -v
-
-# Build distribution packages
+python -m pip install -e '.[dev]'
+python -m ruff check .
+python -m pytest -q
 python -m build
 ```
 
----
+Tests compare real HTML and GIF execution against headless metrics, check exact frame counts and paired random schedules, and cover configuration isolation, empirical input rejection, provenance, and graph decay. CI runs Python 3.10–3.12 and uploads rendered, headless, and paired-study smoke artifacts.
 
-## License
+Reproducibility means matching scientific metrics for the same code, input, effective configuration, backend, and dependency environment. Timestamps and output paths vary; CPU/GPU and dependency versions can introduce numerical differences. The passport records these distinctions rather than promising byte-identical output everywhere.
 
-This project is licensed under the [MIT License](LICENSE).
+The [guided notebook](notebooks/quickstart.ipynb) introduces the existing API. See [CONTRIBUTING.md](CONTRIBUTING.md) and [experiment design](docs/experiment-design.md) before extending the detector.
+
+MIT licensed. Built for open exploration.
