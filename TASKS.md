@@ -2,6 +2,8 @@
 
 ## Done
 
+- Added portable study reports with per-seed effects and explicit evaluation eligibility.
+
 - Added a renderer-independent sequential engine, headless JSON runs, and paired
   multi-seed synthetic coupling studies with a committed eight-seed reference report.
 - Fixed duplicate animation steps, directed-correlation semantics, decaying graph

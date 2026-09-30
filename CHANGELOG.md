@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 — Inspectable experiment evidence
+
+- Added offline HTML companions for paired studies, preserving all six pairs and every seed.
+- Added per-pair mean effects, observed ranges, and positive/zero/negative seed counts.
+- Distinguished insufficient observations from evaluated runs with zero detections.
+- Added report-source provenance, boundary regressions, and wheel-build validation.
+
+
 ## Unreleased
 
 - Separate sequential simulation from rendering; process each frame once in HTML,

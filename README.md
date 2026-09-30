@@ -47,6 +47,8 @@ For each seed, the engine runs two arms:
 | Channel 2 contributes to channel 3 during coherence windows. | This contribution is disabled. |
 | Seeded initialization, diffusion, nonlinear dynamics, moderator events, and agent movements. | The same initialization, dynamics, events, and movements. |
 
+Open `outputs/control-study.html` for the portable experiment report: all six pairs, per-seed effects, observed ranges, and the effective configuration. It works offline and needs no server. The adjacent JSON is the machine-readable evidence record.
+
 The JSON report contains each paired run, per-pair detection rates, and the mean and range of paired differences. A detection rate is detections divided by eligible agent-windows for that pair. It is **not a probability of a true relationship**. Agents and overlapping windows are dependent; the report deliberately does not turn their count into a sample size for a significance test.
 
 A [checked eight-seed example](docs/experiment-design.md#checked-example-eight-paired-seeds) includes the complete report and observed detection rates.
@@ -59,7 +61,7 @@ This is a coupling ablation benchmark for the synthetic model. It is distinct fr
 ions-x --quick --headless --frames 200 --seed 42 --output outputs/run.json
 ```
 
-Headless mode writes one JSON report and skips Matplotlib rendering. It is useful for batch work and reproducibility checks. The report distinguishes repeated detections from unique associations and records the actual number of processed frames.
+Headless mode writes one JSON report and skips Matplotlib rendering. It is useful for batch work and reproducibility checks. The report distinguishes repeated detections from unique associations and records the actual number of processed frames. Its `evaluation` section records eligible agent-windows and all six detection rates. Runs shorter than the correlation window are labeled `insufficient_observations`, with null rates; zero detections after evaluation remain numeric zero.
 
 ```python
 import ions_x_deep_emergence as lab
@@ -110,7 +112,7 @@ ions-x --preset baseline --headless --frames 100 --output outputs/baseline.json
 | `--frames N`, `--agents N`, `--field-res N` | Positive integer runtime settings. |
 | `--seed N` | NumPy RandomState seed, 0 through 4294967295. |
 | `--headless` | JSON report without animation. |
-| `--control-study N` | N paired seeds beginning at `--seed`; synthetic only, JSON output. |
+| `--control-study N` | N paired seeds beginning at `--seed`; synthetic only, JSON plus an offline HTML report. |
 | `--preset MODE` | `synthetic`, `empirical`, or `baseline`. |
 | `--input-data PATH` | CSV telemetry; supplying a CSV without a preset is labeled empirical. |
 | `--output PATH` | `.html` / `.gif` for animation, `.json` for headless or paired study. |
@@ -152,7 +154,7 @@ python -m pytest -q
 python -m build
 ```
 
-Tests compare real HTML and GIF execution against headless metrics, check exact frame counts and paired random schedules, and cover configuration isolation, empirical input rejection, provenance, and graph decay. CI runs Python 3.10–3.12 and uploads rendered, headless, and paired-study smoke artifacts.
+Tests compare real HTML and GIF execution against headless metrics, check exact frame counts and paired random schedules, and cover configuration isolation, empirical input rejection, provenance, and graph decay. CI runs Python 3.10–3.12, verifies the wheel build, and uploads rendered, headless, and paired-study smoke artifacts.
 
 Reproducibility means matching scientific metrics for the same code, input, effective configuration, backend, and dependency environment. Timestamps and output paths vary; CPU/GPU and dependency versions can introduce numerical differences. The passport records these distinctions rather than promising byte-identical output everywhere.
 

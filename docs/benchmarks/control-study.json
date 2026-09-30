@@ -38,6 +38,128 @@
   ],
   "mean_paired_difference": 2987.375,
   "opportunities_per_pair_per_run": 2040,
+  "paired_association_effects": {
+    "ch0--ch1": {
+      "mean_rate_difference": 0.9247549019607844,
+      "negative_seeds": 0,
+      "per_seed_rate_differences": [
+        0.8740196078431373,
+        0.9514705882352941,
+        0.9122549019607843,
+        0.9362745098039216,
+        0.946078431372549,
+        0.921078431372549,
+        0.9230392156862746,
+        0.9338235294117647
+      ],
+      "positive_seeds": 8,
+      "rate_difference_range": [
+        0.8740196078431373,
+        0.9514705882352941
+      ],
+      "zero_seeds": 0
+    },
+    "ch0--ch2": {
+      "mean_rate_difference": 0.002879901960784314,
+      "negative_seeds": 3,
+      "per_seed_rate_differences": [
+        0.00980392156862745,
+        0.03480392156862745,
+        0.014705882352941176,
+        -0.00196078431372549,
+        0.023529411764705882,
+        -0.03480392156862745,
+        0.024509803921568627,
+        -0.047549019607843135
+      ],
+      "positive_seeds": 5,
+      "rate_difference_range": [
+        -0.047549019607843135,
+        0.03480392156862745
+      ],
+      "zero_seeds": 0
+    },
+    "ch0--ch3": {
+      "mean_rate_difference": -0.015625,
+      "negative_seeds": 6,
+      "per_seed_rate_differences": [
+        -0.009313725490196078,
+        -0.049019607843137254,
+        -0.03431372549019608,
+        -0.060294117647058824,
+        -0.00784313725490196,
+        0.03529411764705882,
+        0.011274509803921568,
+        -0.010784313725490196
+      ],
+      "positive_seeds": 2,
+      "rate_difference_range": [
+        -0.060294117647058824,
+        0.03529411764705882
+      ],
+      "zero_seeds": 0
+    },
+    "ch1--ch2": {
+      "mean_rate_difference": 0.0,
+      "negative_seeds": 0,
+      "per_seed_rate_differences": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "positive_seeds": 0,
+      "rate_difference_range": [
+        0.0,
+        0.0
+      ],
+      "zero_seeds": 8
+    },
+    "ch1--ch3": {
+      "mean_rate_difference": 0.0011029411764705882,
+      "negative_seeds": 2,
+      "per_seed_rate_differences": [
+        0.041176470588235294,
+        0.01568627450980392,
+        0.00196078431372549,
+        -0.050490196078431374,
+        -0.026470588235294117,
+        0.0,
+        0.02696078431372549,
+        0.0
+      ],
+      "positive_seeds": 4,
+      "rate_difference_range": [
+        -0.050490196078431374,
+        0.041176470588235294
+      ],
+      "zero_seeds": 2
+    },
+    "ch2--ch3": {
+      "mean_rate_difference": 0.5512867647058823,
+      "negative_seeds": 0,
+      "per_seed_rate_differences": [
+        0.9627450980392157,
+        0.4980392156862745,
+        0.18725490196078431,
+        0.9102941176470588,
+        0.9519607843137254,
+        0.0,
+        0.9,
+        0.0
+      ],
+      "positive_seeds": 6,
+      "rate_difference_range": [
+        0.0,
+        0.9627450980392157
+      ],
+      "zero_seeds": 2
+    }
+  },
   "paired_difference_range": [
     1786,
     3850
@@ -87,7 +209,8 @@
     "input_sha256": null,
     "interpretation": "Exploratory associations; confidence is absolute Pearson r, not a probability or causal evidence.",
     "python": "3.12.14",
-    "source_sha256": "004f3d209875a2914a2177aeec9986bf456a72ffb7ede4909dcf06c2d93096ae"
+    "report_source_sha256": "f8e23c7791411903bd2ece0378abc41d2cb57241a2ed52e190bb0d00b0a5a49c",
+    "source_sha256": "a8825947de55e568968ef8390b69ae85c7a7e386f21fe34692b8e2a253bef08b"
   },
   "repetitions": 8,
   "runs": [
@@ -634,6 +757,6 @@
       }
     }
   ],
-  "schema_version": 1,
+  "schema_version": 2,
   "starting_seed": 42
 }

@@ -15,6 +15,8 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+from study_report import paired_association_summary, render_study_report
+
 try:
     import cupy as cp
 
@@ -128,6 +130,7 @@ class RunResult:
     summary_path: Path | None = None
     calibration_threshold: float | None = None
     passport: dict[str, Any] | None = None
+    report_path: Path | None = None
 
 
 @dataclass
@@ -1045,6 +1048,7 @@ def experiment_passport(input_path: Path | None = None) -> dict[str, Any]:
     return {
         'configuration': {key: getattr(CFG, key) for key in DEFAULT_CONFIG},
         'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'report_source_sha256': hashlib.sha256(Path(__file__).with_name('study_report.py').read_bytes()).hexdigest(),
         'input_sha256': hashlib.sha256(input_path.read_bytes()).hexdigest() if input_path is not None else None,
         'python': platform.python_version(),
         'dependencies': {name: version(name) for name in ('numpy', 'pandas', 'networkx', 'matplotlib')},
@@ -1093,7 +1097,7 @@ def run_control_study(repeats: int, seed: int) -> dict[str, Any]:
     opportunities = CFG.AGENTS * (CFG.FRAMES - CFG.CORR_WINDOW + 1)
     differences = [row['paired_difference'] for row in rows]
     return {
-        'schema_version': 1,
+        'schema_version': 2,
         'kind': 'paired_synthetic_coupling_ablation',
         'passport': experiment_passport(),
         'repetitions': repeats,
@@ -1107,6 +1111,7 @@ def run_control_study(repeats: int, seed: int) -> dict[str, Any]:
                    for arm in ('coupled', 'uncoupled')}
             for pair in pairs
         },
+        'paired_association_effects': paired_association_summary(rows, opportunities),
         'runs': rows,
         'limitations': [
             'No p-values: overlapping windows and agents observing one field are dependent.',
@@ -1119,8 +1124,21 @@ def run_control_study(repeats: int, seed: int) -> dict[str, Any]:
 
 def build_run_summary(result: RunResult, metrics: 'PerformanceMetrics') -> dict[str, Any]:
     """Assemble the lightweight per-run summary written beside the animation."""
+    config = (result.passport or {}).get('configuration', {})
+    window = config.get('CORR_WINDOW', CFG.CORR_WINDOW)
+    eligible = max(0, len(metrics.discovery_rate_history) - window + 1) * result.agents
     return {
-        'schema_version': 2,
+        'schema_version': 3,
+        'evaluation': {
+            'status': 'evaluated' if eligible else 'insufficient_observations',
+            'correlation_window': window,
+            'opportunities_per_pair': eligible,
+            'association_rates': {
+                f'ch{i}--ch{j}': metrics.edge_counts.get(f'ch{i}--ch{j}', 0) / eligible if eligible else None
+                for i in range(config.get('CHANNELS', CFG.CHANNELS))
+                for j in range(i + 1, config.get('CHANNELS', CFG.CHANNELS))
+            },
+        },
         'output_path': str(result.output_path),
         'preset': result.preset,
         'experiment': result.experiment,
@@ -1158,11 +1176,12 @@ def main(argv: Sequence[str] | None = None) -> RunResult:
     if args.control_study:
         report = run_control_study(args.control_study, CFG.SEED)
         write_report(args.output, report)
-        print(f'Paired control study complete: {args.control_study} seeds. Report: {args.output}')
+        report_path = render_study_report(report, args.output.with_suffix('.html'))
+        print(f'Paired control study complete: {args.control_study} seeds. Report: {args.output}. Readable report: {report_path}')
         return RunResult(output_path=args.output, frames=CFG.FRAMES, agents=CFG.AGENTS,
                          field_res=CFG.FIELD_RES, on_gpu=on_gpu, seed=CFG.SEED,
                          experiment=args.experiment or ('quick' if args.quick else 'balanced'),
-                         summary_path=args.output, passport=report['passport'])
+                         summary_path=args.output, passport=report['passport'], report_path=report_path)
     target_field, calibration_threshold = _prepare_target_and_threshold(args)
     if target_field is not None:
         CFG.FRAMES = min(CFG.FRAMES, target_field.frame_count)

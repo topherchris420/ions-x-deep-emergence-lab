@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ions-x-deep-emergence-lab"
-version = "0.3.0"
-description = "A GPU-optional, multi-agent simulation sandbox for watching causal hints emerge inside coupled dynamical fields (the ATOM framework)."
+version = "0.4.0"
+description = "Reproducible multi-agent sensing experiments with paired coupling controls and inspectable evidence."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -43,7 +43,7 @@ Issues = "https://github.com/topherchris420/ions-x-deep-emergence-lab/issues"
 ions-x = "ions_x_deep_emergence:cli"
 
 [tool.setuptools]
-py-modules = ["ions_x_deep_emergence"]
+py-modules = ["ions_x_deep_emergence", "study_report"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

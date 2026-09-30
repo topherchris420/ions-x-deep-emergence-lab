@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IONS-X · Paired experiment report</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#081b20;color:#eaf4f3;
+font:16px/1.65 system-ui,sans-serif}main{max-width:1180px;margin:auto;padding:48px 24px}
+h1{font-size:clamp(2rem,5vw,3.7rem);line-height:1.12;max-width:850px}h2{margin-top:40px}
+.eyebrow{color:#79d4ca;letter-spacing:.14em;text-transform:uppercase;font-size:.8rem}
+.lead{max-width:800px;color:#bfd4d4}.stats{display:flex;flex-wrap:wrap;gap:16px;margin:30px 0}
+.stat{background:#123039;padding:18px 24px;border-radius:12px;flex:1;min-width:180px}
+.stat strong{display:block;font-size:1.8rem;color:#89e1d6}.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{padding:13px;
+border-bottom:1px solid #315059;text-align:right;white-space:nowrap}th:first-child{text-align:left}
+thead th{color:#89e1d6;font-size:.85rem}small{display:block;color:#adc5c5;font-weight:400}
+.note{border-left:3px solid #79d4ca;padding:12px 20px;background:#102b32}code{overflow-wrap:anywhere}
+summary{cursor:pointer;color:#89e1d6}footer{margin-top:40px;color:#adc5c5;font-size:.85rem}
+@media print{:root{color-scheme:light}body{background:white;color:black}.lead,small,footer{color:#333}
+.stat,.note{background:#eee}.stat strong,thead th,summary,.eyebrow{color:#07554e}}
+</style></head><body><main>
+<p class="eyebrow">Vers3Dynamics / IONS-X Deep Emergence Lab</p>
+<h1>What changes when the coupling disappears?</h1>
+<p class="lead">A paired synthetic experiment. Each seed replays the same initial field, moving agents,
+and moderator schedule. The uncoupled arm removes the two explicit cross-channel coupling terms.</p>
+<div class="stats"><div class="stat"><strong>8</strong>paired seeds</div>
+<div class="stat"><strong>100</strong>frames per arm</div>
+<div class="stat"><strong>2,040</strong>eligible agent-windows per pair / arm</div></div>
+<h2>Association response</h2><p>Mean rates across seeds. Differences are coupled minus uncoupled in
+percentage points (pp). The range describes observed seed variation, not a confidence interval.</p>
+<div class="scroll"><table><thead><tr><th scope="col">Pair / injected relationship</th>
+<th scope="col">Coupled</th><th scope="col">Uncoupled</th><th scope="col">Difference</th>
+<th scope="col">Seed range</th><th scope="col">Seeds + / = / −</th></tr></thead>
+<tbody><tr><th scope="row">ch0--ch1<small>continuous</small></th><td>100.00%</td><td>7.52%</td><td>+92.48 pp</td><td>+87.40 to +95.15 pp</td><td>8 / 0 / 0</td></tr><tr><th scope="row">ch0--ch2<small>no direct injected coupling</small></th><td>5.34%</td><td>5.06%</td><td>+0.29 pp</td><td>-4.75 to +3.48 pp</td><td>5 / 0 / 3</td></tr><tr><th scope="row">ch0--ch3<small>no direct injected coupling</small></th><td>6.19%</td><td>7.76%</td><td>-1.56 pp</td><td>-6.03 to +3.53 pp</td><td>2 / 0 / 6</td></tr><tr><th scope="row">ch1--ch2<small>no direct injected coupling</small></th><td>5.28%</td><td>5.28%</td><td>+0.00 pp</td><td>+0.00 to +0.00 pp</td><td>0 / 8 / 0</td></tr><tr><th scope="row">ch1--ch3<small>no direct injected coupling</small></th><td>5.52%</td><td>5.41%</td><td>+0.11 pp</td><td>-5.05 to +4.12 pp</td><td>4 / 2 / 2</td></tr><tr><th scope="row">ch2--ch3<small>coherence windows only</small></th><td>60.32%</td><td>5.20%</td><td>+55.13 pp</td><td>+0.00 to +96.27 pp</td><td>6 / 2 / 0</td></tr></tbody></table></div>
+<p class="note">A higher detection rate measures response to this synthetic intervention.
+It does not establish causality in empirical data. Pairs without direct coupling may still change
+indirectly. Agents and overlapping windows are not independent experimental replicates.</p>
+<h2>Every seed, every pair</h2><p>Rate differences in percentage points. Negative and zero results are retained.</p>
+<div class="scroll"><table><thead><tr><th scope="col">Seed</th><th scope="col">ch0--ch1</th><th scope="col">ch0--ch2</th><th scope="col">ch0--ch3</th><th scope="col">ch1--ch2</th><th scope="col">ch1--ch3</th><th scope="col">ch2--ch3</th></tr></thead>
+<tbody><tr><th scope="row">42</th><td>+87.40</td><td>+0.98</td><td>-0.93</td><td>+0.00</td><td>+4.12</td><td>+96.27</td></tr><tr><th scope="row">43</th><td>+95.15</td><td>+3.48</td><td>-4.90</td><td>+0.00</td><td>+1.57</td><td>+49.80</td></tr><tr><th scope="row">44</th><td>+91.23</td><td>+1.47</td><td>-3.43</td><td>+0.00</td><td>+0.20</td><td>+18.73</td></tr><tr><th scope="row">45</th><td>+93.63</td><td>-0.20</td><td>-6.03</td><td>+0.00</td><td>-5.05</td><td>+91.03</td></tr><tr><th scope="row">46</th><td>+94.61</td><td>+2.35</td><td>-0.78</td><td>+0.00</td><td>-2.65</td><td>+95.20</td></tr><tr><th scope="row">47</th><td>+92.11</td><td>-3.48</td><td>+3.53</td><td>+0.00</td><td>+0.00</td><td>+0.00</td></tr><tr><th scope="row">48</th><td>+92.30</td><td>+2.45</td><td>+1.13</td><td>+0.00</td><td>+2.70</td><td>+90.00</td></tr><tr><th scope="row">49</th><td>+93.38</td><td>-4.75</td><td>-1.08</td><td>+0.00</td><td>+0.00</td><td>+0.00</td></tr></tbody></table></div>
+<h2>Interpretation boundaries</h2><ul><li>No p-values: overlapping windows and agents observing one field are dependent.</li><li>The uncoupled arm preserves field evolution, moderators, agent paths and initial random draws.</li><li>This measures detector sensitivity to injected coupling, not causal discovery on real-world data.</li><li>Operator types are labels for one shared detector; lagged detection is not implemented.</li></ul>
+<details><summary>Effective configuration and provenance</summary><div class="scroll"><table>
+<tbody><tr><th scope="row">FIELD_RES</th><td>32</td></tr><tr><th scope="row">CHANNELS</th><td>4</td></tr><tr><th scope="row">AGENTS</th><td>40</td></tr><tr><th scope="row">MEMORY</th><td>300</td></tr><tr><th scope="row">AGENT_TYPES</th><td>(&#x27;perceiver&#x27;, &#x27;forecaster&#x27;, &#x27;integrator&#x27;)</td></tr><tr><th scope="row">CORR_WINDOW</th><td>50</td></tr><tr><th scope="row">DISCOVER_THRESH</th><td>0.32</td></tr><tr><th scope="row">LAG_FRAMES</th><td>(5, 15, 30, 60)</td></tr><tr><th scope="row">CONFIDENCE_DECAY</th><td>0.995</td></tr><tr><th scope="row">GEOMAG_INFLUENCE</th><td>True</td></tr><tr><th scope="row">LUNAR_CYCLE</th><td>True</td></tr><tr><th scope="row">COHERENCE_BOOST</th><td>True</td></tr><tr><th scope="row">FRAMES</th><td>100</td></tr><tr><th scope="row">SAMPLE_PER_FRAME</th><td>4</td></tr><tr><th scope="row">SEED</th><td>42</td></tr><tr><th scope="row">STEP_SIZE</th><td>3</td></tr></tbody></table></div><p>Engine SHA-256: <code>a8825947de55e568968ef8390b69ae85c7a7e386f21fe34692b8e2a253bef08b</code></p>
+<p>Dependencies: <code>{&#x27;numpy&#x27;: &#x27;2.3.5&#x27;, &#x27;pandas&#x27;: &#x27;2.2.3&#x27;, &#x27;networkx&#x27;: &#x27;3.7&#x27;, &#x27;matplotlib&#x27;: &#x27;3.10.8&#x27;}</code></p></details>
+<footer>Generated from the adjacent JSON report. No external resources or tracking. The JSON is the
+machine-readable record; this page is its descriptive companion.</footer></main></body></html>

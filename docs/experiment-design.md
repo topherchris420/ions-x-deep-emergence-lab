@@ -30,7 +30,12 @@ Per-pair rates expose whether that difference is concentrated on the injected
 relationships or spread across other pairs. Rates divide counts by
 `AGENTS * (FRAMES - CORR_WINDOW + 1)`, the eligible windows for each pair.
 
-The report includes each run, its seed, both arms, and coherence frames. The engine
+The report includes each run, its seed, both arms, and coherence frames.
+`paired_association_effects` preserves the coupled-minus-uncoupled rate difference
+for every seed and pair, its mean and observed range, and positive/zero/negative
+seed counts. The HTML companion presents these same values without a server or
+external resources. Ranges are descriptive extrema, not uncertainty intervals;
+a single-seed study has a zero-width range and supplies no estimate of variability. The engine
 restores the caller's RNG state after the study. Tests verify matching agent paths
 and random schedules across arms, so rendering/layout randomness cannot alter the
 comparison. Studies with too few frames or seeds outside the supported range fail
@@ -44,7 +49,7 @@ replicates, effect uncertainty, held-out evaluation, and multiple-testing handli
 
 ## Checked example: eight paired seeds
 
-The committed [report](benchmarks/control-study.json) was generated with:
+The committed [JSON report](benchmarks/control-study.json) and [offline HTML companion](benchmarks/control-study.html) were generated with:
 
 ```bash
 ions-x --quick --control-study 8 --frames 100 --agents 40 --field-res 32 \
@@ -112,3 +117,12 @@ and RNG, so callers must keep settings unchanged and run engines sequentially.
 Headless mode and both render formats are tested against the same engine metrics.
 The GPU path is optional and recorded, but CPU/GPU numerical identity is not
 promised. Tests in CI exercise CPU execution.
+
+## Report schemas
+
+Single-run schema 3 adds `evaluation`: `status`, `correlation_window`,
+`opportunities_per_pair`, and six `association_rates`. An ineligible run has null
+rates and status `insufficient_observations`; an eligible run with no detections
+has zero rates and status `evaluated`. Paired-study schema 2 adds seed-level
+`paired_association_effects`. Existing counts and arm records remain available.
+Passports fingerprint both the engine and report implementation.
