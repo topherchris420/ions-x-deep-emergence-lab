@@ -1,15 +1,67 @@
 # Changelog
 
-## 0.4.0 — Inspectable experiment evidence
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and the project aims to
+follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.5.0] - 2026-10-21
+
+The synthetic generator, the detector and the report were audited against ground truth
+measured directly from the field. The new default measures what the documentation
+always claimed; the old behavior remains reproducible bit for bit.
+
+### Fixed
+- **The synthetic field froze.** The legacy update had gain 1.24 near zero, so every pixel
+  saturated near +-1 within about 60-100 frames and the "changing field" became a fixed pattern.
+- **The field had no spatial structure.** The legacy diffusion kernel omitted (2*pi)^2 and
+  attenuated the finest scale by at most 0.065% per frame; neighbouring pixels correlated at 0.00.
+- **"Coherence windows only" coupling was permanent.** One window copied channel 2 into
+  channel 3 for the rest of the run, producing the bimodal 0%/96% ch2-ch3 seeds of 0.4.
+- **The association map could not distinguish signal from chance.** The shared graph keeps the
+  strongest |r| from any agent, which false alarms alone keep high for every pair. The animation
+  now draws operator consensus: the share of agents detecting each pair this frame.
+- Telemetry projection materialized every frame (about 5 GB for 20,000 rows at the default
+  resolution). Frames are now projected on demand with identical values.
+- Coherence lookups were O(events) per call and empirical runs can log an event every frame,
+  making long CSV runs quadratic. Lookups now bisect a sorted list.
+
+### Added
+- **Driven-dissipative field** (`--dynamics driven`, the new default): damped, diffusing through
+  a true Laplacian, renewed by spatially correlated forcing that both arms share. Its parameters
+  (`FIELD_MEMORY`, `FIELD_CORRELATION_LENGTH`, `COUPLING_STRENGTH`, `COHERENCE_MIXING`) are recorded.
+- `--dynamics legacy` reproduces 0.4 bit for bit. The 0.4 benchmark is kept under
+  `docs/benchmarks/legacy-0.4/` and a test regenerates it exactly.
+- **Field diagnostics**: pixel-level pair correlations, memory across one window, and neighbour
+  correlation, in headless reports and for every arm of a paired study.
+- **Detector calibration**: the textbook false-alarm rate for the window and threshold, the rate
+  the uncoupled arm actually produced, their ratio, the effective independent samples per window,
+  and a threshold recalibrated on even seeds and evaluated on held-out odd seeds.
+- **Seed-level inference**: exact sign-flip tests over seeds with Holm adjustment across all six
+  pairs, plus standard errors. Agents and windows are still never treated as replicates.
+- **Threshold-free discrimination**: |r| histograms for every evaluated window and pair, pooled
+  and per-seed AUC, and ROC curves in the report.
+- The offline report gains a per-seed effect plot, calibration and held-out results, ROC small
+  multiples, and a field ground-truth table, all inline SVG with no scripts.
+- The animation shows operator positions, a stable colour scale, and coherence-window state.
+- `__version__`, recorded in every passport and used as the single source of the package version.
+
+### Changed
+- The engine samples, stores and correlates all agents as one batch per frame. Random draws keep
+  the original order, so results are identical, about eight times faster.
+- Engine agents keep `pos`, `memory`, `discover` and `observe`; their positions and memories are
+  views into shared arrays.
+- Single-run reports are schema 4: `opportunities_per_pair` counts the windows actually evaluated,
+  and `field_diagnostics` is added. Paired studies are schema 3. Numeric JSON arrays are written on one line.
+- Passports list inactive settings for the actual run (generator settings are inactive for
+  telemetry and for legacy dynamics) and record the scipy version.
+- `TelemetryTargetField` stores `signals` and `bases`; `fields` is materialized on request.
+
+## [0.4.0] - Inspectable experiment evidence
 
 - Added offline HTML companions for paired studies, preserving all six pairs and every seed.
 - Added per-pair mean effects, observed ranges, and positive/zero/negative seed counts.
 - Distinguished insufficient observations from evaluated runs with zero detections.
 - Added report-source provenance, boundary regressions, and wheel-build validation.
-
-
-## Unreleased
-
 - Separate sequential simulation from rendering; process each frame once in HTML,
   GIF, and new headless JSON mode. Close rendered figures after export.
 - Add paired multi-seed synthetic coupling ablations with per-pair rates and complete
@@ -24,11 +76,6 @@
 - Vectorize pairwise Pearson evaluation with safe constant-channel handling.
 - Document inactive legacy settings, shared operator behavior, offline preprocessing,
   heuristic calibration, and limits of scientific interpretation.
-
-
-All notable changes to this project are documented here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and the project aims to
-follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.3.0] - 2026-08-20
 

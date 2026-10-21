@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-labelledby="title desc">
   <title id="title">IONS-X Deep Emergence Lab preview</title>
-  <desc id="desc">Conceptual preview of a field simulation, autonomous operators, moderator signal, and emerging causal graph.</desc>
+  <desc id="desc">Conceptual preview of a field simulation, autonomous operators, moderator signal, and an emerging association graph.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#071018"/>
@@ -27,7 +27,7 @@
     <path d="M150 0V675M300 0V675M450 0V675M600 0V675M750 0V675M900 0V675M1050 0V675"/>
   </g>
   <text x="64" y="80" fill="#f8f1e5" font-family="Georgia, serif" font-size="42" font-weight="700">IONS-X Deep Emergence Lab</text>
-  <text x="66" y="120" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="19">Simulate fields, operators, moderators, and emerging causal structure.</text>
+  <text x="66" y="120" fill="#b7c9bd" font-family="Arial, sans-serif" font-size="19">Simulate fields, operators, moderators, and emerging association structure.</text>
 
   <g transform="translate(72 168)">
     <rect width="408" height="340" rx="22" fill="#071018" stroke="#7dd3fc" stroke-opacity="0.45"/>
@@ -69,7 +69,7 @@
     <text x="174" y="95" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="15">ch1</text>
     <text x="290" y="41" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="15">ch2</text>
     <text x="244" y="161" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="15">ch3</text>
-    <text x="0" y="224" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="19" font-weight="700">Emergent causal graph</text>
+    <text x="0" y="224" fill="#f8f1e5" stroke="none" font-family="Arial, sans-serif" font-size="19" font-weight="700">Emergent association graph</text>
     <text x="0" y="252" fill="#b7c9bd" stroke="none" font-family="Arial, sans-serif" font-size="14">relationships strengthen, decay, and disappear over time</text>
   </g>
 </svg>

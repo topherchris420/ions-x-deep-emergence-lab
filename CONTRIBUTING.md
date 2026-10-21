@@ -52,11 +52,27 @@ python ions_x_deep_emergence.py --quick --control-study 2 --agents 4 --field-res
 2. Document it in the README's experiment-presets table.
 3. Add a test asserting the preset applies (see `tests/test_experiments_and_outputs.py`).
 
+## Changing the generator or detector
+
+The committed benchmark is evidence, and the test suite regenerates it exactly. If a change
+alters results on purpose, regenerate it in the same pull request and say why in the changelog:
+
+```bash
+ions-x --quick --control-study 8 --frames 100 --agents 40 --field-res 32 \
+  --seed 42 --output docs/benchmarks/control-study.json
+```
+
+`--dynamics legacy` must keep reproducing `docs/benchmarks/legacy-0.4/` bit for bit; never edit
+that directory. Draw any new randomness identically in both arms, never conditionally on the
+coupling, so the arms stay paired. When you tune a parameter, check the report's field
+diagnostics and calibration sections, not only the detection rates.
+
 ## Experiment integrity
 
 Read [the experiment protocol](docs/experiment-design.md) before modifying field
 dynamics or detection. Keep paired random schedules matched; do not let rendering
 consume simulation randomness. `main()` resets configuration; lower-level engine
 callers own configuration and must run sequentially. Treat detections as dependent
-observations, not independent experiments, and keep the shared detector and inactive
-legacy settings accurately described.
+observations, not independent experiments: seeds are the only independent units, and
+statistics must come from them. Keep the shared detector and inactive legacy settings
+accurately described.

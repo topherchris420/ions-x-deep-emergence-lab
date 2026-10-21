@@ -1,12 +1,22 @@
+"""IONS-X Deep Emergence Lab: moving agents sense a four-channel field and report associations.
+
+The synthetic field is a known generator, so the lab can ask a falsifiable question: does the
+detector respond differently when the injected coupling is removed, and how often does it fire
+when nothing was injected at all?
+"""
+
 import argparse
+import bisect
 import hashlib
 import json
 import math
 import platform
-from collections import defaultdict
-from collections.abc import Mapping, Sequence
+import re
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any, Optional
@@ -15,7 +25,17 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
-from study_report import paired_association_summary, render_study_report
+from study_report import (
+    HISTOGRAM_BINS,
+    discrimination_summary,
+    paired_association_summary,
+    pooled_histogram,
+    render_study_report,
+    tail_count,
+    threshold_bin_for_rate,
+)
+
+__version__ = '0.5.0'
 
 try:
     import cupy as cp
@@ -49,6 +69,13 @@ class CFG:
     SAMPLE_PER_FRAME: int = 8
     SEED: int = 42
     STEP_SIZE: int = 3
+    # Synthetic field generator. 'driven' (default since 0.5) renews a spatially correlated field
+    # every frame; 'legacy' reproduces the <=0.4 generator bit for bit, including its defects.
+    DYNAMICS: str = 'driven'
+    FIELD_MEMORY: float = 0.95  # per-frame persistence: correlation time 1 / (1 - memory) frames
+    FIELD_CORRELATION_LENGTH: float = 1.0  # pixels; spatial scale of the forcing noise
+    COUPLING_STRENGTH: float = 0.08  # injected ch1 -> ch0 per frame, scaled by the moderator factor
+    COHERENCE_MIXING: float = 0.25  # injected ch2 -> ch3 per frame, inside coherence windows only
 
 
 CFG = CFG()
@@ -98,7 +125,16 @@ EXPERIMENTS: Mapping[str, Mapping[str, Any]] = {
         'FRAMES': 200,
     },
 }
+DYNAMICS_MODES = ('driven', 'legacy')
+DRIVEN_SETTINGS = ('FIELD_MEMORY', 'FIELD_CORRELATION_LENGTH', 'COUPLING_STRENGTH', 'COHERENCE_MIXING')
+UNUSED_SETTINGS = ('LAG_FRAMES', 'SAMPLE_PER_FRAME', 'GEOMAG_INFLUENCE', 'LUNAR_CYCLE', 'COHERENCE_BOOST')
+INJECTED_ASSOCIATIONS = {'ch0--ch1': 'continuous', 'ch2--ch3': 'coherence windows only'}
+# Per-channel diffusion. The legacy kernel omits (2*pi)^2, so its coefficients attenuate the
+# Nyquist frequency by at most 0.07% per frame; the driven kernel uses a true Laplacian.
+LEGACY_DIFFUSION = (0.002, 0.0015, 0.0018, 0.0012)
+DRIVEN_DIFFUSION = (0.1, 0.075, 0.09, 0.06)
 CHANNEL_NAMES = ('em_rf', 'optical_ir', 'consciousness_proxy', 'control_baseline')
+CHANNEL_LABELS = {'ch0': 'CH 0\nEM / RF', 'ch1': 'CH 1\nOptical / IR', 'ch2': 'CH 2\nREG proxy', 'ch3': 'CH 3\nReference'}
 COVARIATE_NAMES = ('kp_index', 'lunar_phase', 'sidereal_time', 'xray_flux')
 
 SENSOR_ALIASES: Mapping[str, tuple[str, ...]] = {
@@ -256,6 +292,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--headless', action='store_true', help='Run without rendering; write a JSON experiment report.')
     parser.add_argument('--control-study', type=positive_int, metavar='N',
                         help='Compare coupled and uncoupled synthetic fields over N paired seeds; write JSON.')
+    parser.add_argument('--dynamics', choices=DYNAMICS_MODES,
+                        help="Synthetic field generator: 'driven' (default) or 'legacy' to reproduce <=0.4 results.")
     parser.add_argument(
         '--live',
         action='store_true',
@@ -272,6 +310,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error('--seed must be between 0 and 4294967295')
     if args.control_study and (args.preset != 'synthetic' or args.input_data is not None):
         parser.error('--control-study supports synthetic fields only')
+    if args.dynamics and (args.preset != 'synthetic' or args.input_data is not None):
+        parser.error('--dynamics applies to synthetic fields only')
     if (args.headless or args.control_study) and args.show:
         parser.error('--show requires an animation output')
     if args.headless or args.control_study:
@@ -313,7 +353,31 @@ def apply_runtime_options(args: argparse.Namespace) -> CFG:
         CFG.AGENTS = args.agents
     if args.field_res is not None:
         CFG.FIELD_RES = args.field_res
+    if getattr(args, 'dynamics', None) is not None:
+        CFG.DYNAMICS = args.dynamics
     return CFG
+
+
+def validate_configuration() -> None:
+    """Reject settings the synthetic generator cannot run honestly."""
+    if CFG.DYNAMICS not in DYNAMICS_MODES:
+        raise ValueError(f'Unknown dynamics {CFG.DYNAMICS!r}; choose from {DYNAMICS_MODES}.')
+    if not 0.0 <= CFG.FIELD_MEMORY < 1.0:
+        raise ValueError('FIELD_MEMORY must lie in [0, 1) so the driven field stays stationary.')
+    if CFG.FIELD_CORRELATION_LENGTH < 0:
+        raise ValueError('FIELD_CORRELATION_LENGTH cannot be negative.')
+    if len(CHANNEL_NAMES) != CFG.CHANNELS:
+        raise ValueError(f'The synthetic generator defines exactly {len(CHANNEL_NAMES)} channels.')
+
+
+def inactive_configuration(synthetic: bool = True) -> list[str]:
+    """Configuration names that cannot influence this run."""
+    inactive = list(UNUSED_SETTINGS)
+    if not synthetic:
+        inactive += ['DYNAMICS', *DRIVEN_SETTINGS]
+    elif CFG.DYNAMICS == 'legacy':
+        inactive += list(DRIVEN_SETTINGS)
+    return inactive
 
 
 def save_animation(animation: Any, output_path: Path, fps: int = DEFAULT_GIF_FPS, dashboard: LiveDashboard | None = None) -> Path:
@@ -401,12 +465,22 @@ def _spatial_bases(field_res: int) -> np.ndarray:
 
 @dataclass
 class TelemetryTargetField:
-    fields: np.ndarray
+    """Telemetry projected onto fixed spatial bases.
+
+    Frame ``t`` of channel ``c`` is ``signals[t, c] * bases[c]``. Frames are projected on demand,
+    so memory grows with rows plus one grid, not rows times grid.
+    """
+
+    signals: np.ndarray  # (frames, channels): standardized channel values
+    bases: np.ndarray  # (channels, field_res, field_res): float32 spatial patterns
     timestamps: pd.Series
     raw_values: pd.DataFrame
     covariates: pd.DataFrame
     source: str = 'dataframe'
     quality_report: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        self._covariate_values = self.covariates[list(COVARIATE_NAMES)].to_numpy(dtype='float64')
 
     @classmethod
     def from_csv(cls, input_path: Path, field_res: int, rng: np.random.RandomState) -> 'TelemetryTargetField':
@@ -446,9 +520,9 @@ class TelemetryTargetField:
         if not np.isfinite(raw_values.to_numpy()).all() or not np.isfinite(covariates.to_numpy()).all():
             raise ValueError('Telemetry sensor and covariate values must be finite.')
 
-        fields = cls._map_to_grid(raw_values, field_res=field_res, rng=rng)
-        return cls(fields=fields, timestamps=timestamps, raw_values=raw_values, covariates=covariates,
-                   source=source, quality_report=quality)
+        signals, bases = cls._map_to_grid(raw_values, field_res=field_res, rng=rng)
+        return cls(signals=signals, bases=bases, timestamps=timestamps, raw_values=raw_values,
+                   covariates=covariates, source=source, quality_report=quality)
 
     @classmethod
     def from_null_control(
@@ -469,28 +543,28 @@ class TelemetryTargetField:
         return cls.from_dataframe(df, field_res=field_res, rng=rng, source=source)
 
     @staticmethod
-    def _map_to_grid(raw_values: pd.DataFrame, field_res: int, rng: np.random.RandomState) -> np.ndarray:
-        bases = _spatial_bases(field_res)
+    def _map_to_grid(raw_values: pd.DataFrame, field_res: int, rng: np.random.RandomState) -> tuple[np.ndarray, np.ndarray]:
         texture = rng.normal(0.0, 0.015, size=(len(CHANNEL_NAMES), field_res, field_res)).astype('float32')
-        fields = np.zeros((len(raw_values), len(CHANNEL_NAMES), field_res, field_res), dtype='float32')
-        for channel_index, channel_name in enumerate(CHANNEL_NAMES):
-            normalized = _normalize_values(raw_values[channel_name])
-            basis = bases[channel_index] + texture[channel_index]
-            for frame_index, value in enumerate(normalized):
-                fields[frame_index, channel_index] = (value * basis).astype('float32')
-        return fields
+        bases = _spatial_bases(field_res) + texture
+        signals = np.column_stack([_normalize_values(raw_values[name]) for name in CHANNEL_NAMES])
+        return signals, bases
+
+    @property
+    def fields(self) -> np.ndarray:
+        """Every frame as one (frames, channels, res, res) array, materialized on request."""
+        return (self.signals[:, :, None, None] * self.bases[None]).astype('float32')
 
     @property
     def frame_count(self) -> int:
-        return int(self.fields.shape[0])
+        return int(self.signals.shape[0])
 
     @property
     def field_res(self) -> int:
-        return int(self.fields.shape[-1])
+        return int(self.bases.shape[-1])
 
     def field_for_frame(self, frame: int) -> np.ndarray:
         index = min(max(frame, 0), self.frame_count - 1)
-        return self.fields[index]
+        return (self.signals[index][:, None, None] * self.bases).astype('float32')
 
     def timestamp_for_frame(self, frame: int) -> pd.Timestamp:
         index = min(max(frame, 0), self.frame_count - 1)
@@ -498,7 +572,7 @@ class TelemetryTargetField:
 
     def covariates_for_frame(self, frame: int) -> dict[str, float]:
         index = min(max(frame, 0), self.frame_count - 1)
-        return {name: float(self.covariates.iloc[index][name]) for name in COVARIATE_NAMES}
+        return {name: float(value) for name, value in zip(COVARIATE_NAMES, self._covariate_values[index], strict=True)}
 
     def channel_series(self, channel_index: int) -> np.ndarray:
         channel_name = CHANNEL_NAMES[channel_index]
@@ -511,12 +585,13 @@ class TelemetryTargetField:
             rng=rng,
             source=f'{self.source}:control-only',
         )
-        fields = null_target.fields.copy()
-        fields[:, 3] = self.fields[:, 3]
+        signals, bases = null_target.signals.copy(), null_target.bases.copy()
+        signals[:, 3], bases[3] = self.signals[:, 3], self.bases[3]
         raw_values = null_target.raw_values.copy()
         raw_values['control_baseline'] = self.raw_values['control_baseline'].to_numpy()
         return TelemetryTargetField(
-            fields=fields,
+            signals=signals,
+            bases=bases,
             timestamps=self.timestamps.copy(),
             raw_values=raw_values,
             covariates=self.covariates.copy(),
@@ -544,6 +619,81 @@ class TelemetryTargetField:
             ratios[f'{channel}_short_long'] = short_mean / max(long_mean, 1e-12)
         return ratios
 
+def pairwise_correlations(windows: np.ndarray) -> np.ndarray:
+    """Pearson correlation matrices for one or many observation windows.
+
+    ``windows`` has shape (..., observations, channels); the result has shape (..., channels,
+    channels). Constant channels correlate as exactly 0, never NaN. Agents and the field
+    diagnostics share this one implementation.
+    """
+    windows = np.ascontiguousarray(windows, dtype='float64')
+    centered = windows - windows.mean(axis=-2, keepdims=True)
+    norms = np.sqrt(np.sum(centered * centered, axis=-2))
+    denominator = norms[..., :, None] * norms[..., None, :]
+    return np.divide(np.swapaxes(centered, -1, -2) @ centered, denominator,
+                     out=np.zeros_like(denominator), where=denominator > 1e-24)
+
+
+def channel_pairs(channels: int) -> list[tuple[int, int]]:
+    return [(i, j) for i in range(channels) for j in range(i + 1, channels)]
+
+
+def pair_name(i: int, j: int) -> str:
+    return f'ch{i}--ch{j}'
+
+
+class FieldDiagnostics:
+    """What the synthetic field actually contained, measured over every pixel.
+
+    Agents see a few samples; these values are the ground truth they are trying to recover:
+    the cross-channel correlation of the whole field each frame, how much of the field survives
+    one correlation window, and how smooth it is between neighbouring pixels.
+    """
+
+    def __init__(self, window: int) -> None:
+        self.window = max(int(window), 1)
+        self.pairs: list[tuple[int, int]] = []
+        self.pair_correlations: list[list[float]] = []
+        self.window_memory: list[float] = []
+        self.neighbour_correlation: list[float] = []
+        self._anchor: np.ndarray | None = None
+
+    def log(self, frame: int, field: np.ndarray) -> None:
+        field = np.asarray(field, dtype='float64')
+        self.pairs = channel_pairs(field.shape[0])
+        correlations = pairwise_correlations(field.reshape(field.shape[0], -1).T)
+        self.pair_correlations.append([float(correlations[i, j]) for i, j in self.pairs])
+        if frame % self.window:
+            return
+        if self._anchor is not None:
+            self.window_memory.append(_mean_pattern_correlation(field, self._anchor))
+        self.neighbour_correlation.append(0.5 * (_mean_pattern_correlation(field, np.roll(field, 1, axis=1))
+                                                 + _mean_pattern_correlation(field, np.roll(field, 1, axis=2))))
+        self._anchor = field.copy()
+
+    def summary(self) -> dict[str, Any]:
+        history = np.asarray(self.pair_correlations, dtype='float64')
+
+        def mean(values: Sequence[float]) -> float | None:
+            return float(np.mean(values)) if len(values) else None
+
+        return {
+            'frames': len(self.pair_correlations),
+            'pair_correlation_mean': {pair_name(i, j): mean(history[:, k]) for k, (i, j) in enumerate(self.pairs)}
+            if history.size else {},
+            'window_memory': mean(self.window_memory),
+            'neighbour_correlation': mean(self.neighbour_correlation),
+        }
+
+
+def _mean_pattern_correlation(field: np.ndarray, reference: np.ndarray) -> float:
+    """Mean over channels of the pixelwise correlation between two field snapshots."""
+    channels = field.shape[0]
+    stacked = np.concatenate([field.reshape(channels, -1), reference.reshape(channels, -1)]).T
+    correlations = pairwise_correlations(stacked)
+    return float(np.mean([correlations[c, channels + c] for c in range(channels)]))
+
+
 class PerformanceMetrics:
     def __init__(self) -> None:
         self.type_counts: dict[str, int] = defaultdict(int)
@@ -551,11 +701,31 @@ class PerformanceMetrics:
         self.discovery_rate_history: list[int] = []
         self.coherence_frames: list[int] = []
         self.edge_counts: dict[str, int] = defaultdict(int)
+        self.evaluated_windows = 0  # agent-windows evaluated per channel pair
+        self.abs_r_histogram: np.ndarray | None = None  # (pairs, HISTOGRAM_BINS) counts of |r|
+        self.field: FieldDiagnostics | None = None
 
     def log_discovery(self, agent_type: str, edge: tuple[str, str] | None = None) -> None:
         self.type_counts[agent_type] += 1
         if edge is not None:
             self.edge_counts['--'.join(sorted(edge))] += 1
+
+    def log_discoveries(self, agent_types: Iterable[str], edges: Iterable[str]) -> None:
+        """Bulk form of log_discovery; ``edges`` are already-sorted 'chI--chJ' names."""
+        for agent_type, count in Counter(agent_types).items():
+            self.type_counts[agent_type] += count
+        for edge, count in Counter(edges).items():
+            self.edge_counts[edge] += count
+
+    def log_evaluation(self, strengths: np.ndarray) -> None:
+        """Record every evaluated |r|, detected or not: shape (agents, pairs)."""
+        agents, pairs = strengths.shape
+        if self.abs_r_histogram is None:
+            self.abs_r_histogram = np.zeros((pairs, HISTOGRAM_BINS), dtype=np.int64)
+        bins = np.minimum((strengths * HISTOGRAM_BINS).astype(np.int64), HISTOGRAM_BINS - 1)
+        flat = (bins + HISTOGRAM_BINS * np.arange(pairs)).ravel()
+        self.abs_r_histogram += np.bincount(flat, minlength=pairs * HISTOGRAM_BINS).reshape(pairs, HISTOGRAM_BINS)
+        self.evaluated_windows += agents
 
     def log_frame(self, frame: int, discoveries: int, env_factor: float, is_coherence: bool) -> None:
         self.env_history.append(env_factor)
@@ -566,6 +736,18 @@ class PerformanceMetrics:
     @property
     def total_discoveries(self) -> int:
         return int(sum(self.type_counts.values()))
+
+
+def _event_within(events: Sequence[int], t: int, radius: float, inclusive: bool) -> bool:
+    """Whether any event in the sorted ``events`` lies within ``radius`` frames of ``t``.
+
+    Bisection keeps this O(log n); empirical runs can log an event on every frame.
+    """
+    index = bisect.bisect_left(events, t)
+    distances = [abs(t - events[i]) for i in (index - 1, index) if 0 <= i < len(events)]
+    if not distances:
+        return False
+    return min(distances) <= radius if inclusive else min(distances) < radius
 
 
 class EnvironmentalModerators:
@@ -582,7 +764,7 @@ class EnvironmentalModerators:
         return float(self.m * (1.3 if self.is_coherence_active(t) else 1.0))
 
     def is_coherence_active(self, t: int) -> bool:
-        return any(abs(t - ev) < 15 for ev in self.coherence_events)
+        return _event_within(self.coherence_events, t, 15, inclusive=False)
 
     @property
     def discovery_threshold(self) -> float:
@@ -634,7 +816,7 @@ class RealWorldModerator:
         return float(self.m * (1.15 if self.is_coherence_active(t) else 1.0))
 
     def is_coherence_active(self, t: int) -> bool:
-        return any(abs(t - ev) <= self.coherence_window for ev in self.coherence_events)
+        return _event_within(self.coherence_events, t, self.coherence_window, inclusive=True)
 
     def snapshot(self) -> dict[str, float]:
         values = dict(self.current_covariates)
@@ -665,19 +847,70 @@ class Agent:
         threshold = CFG.DISCOVER_THRESH if threshold is None else threshold
         if len(self.memory) < CFG.CORR_WINDOW:
             return []
-        data = np.array([o.values for o in self.memory[-CFG.CORR_WINDOW :]], dtype='float64')
-        centered = data - data.mean(axis=0)
-        norms = np.linalg.norm(centered, axis=0)
-        denominator = np.outer(norms, norms)
-        correlations = np.divide(centered.T @ centered, denominator,
-                                 out=np.zeros_like(denominator), where=denominator > 1e-24)
+        correlations = pairwise_correlations([o.values for o in self.memory[-CFG.CORR_WINDOW :]])
         discs: list[dict[str, Any]] = []
-        for i in range(CFG.CHANNELS):
-            for j in range(i + 1, CFG.CHANNELS):
-                r = float(np.clip(correlations[i, j], -1.0, 1.0))
-                if abs(r) > threshold:
-                    discs.append({'edge': (f'ch{i}', f'ch{j}'), 'pearson_r': r, 'confidence': abs(r), 'operator_type': self.type})
+        for i, j in channel_pairs(CFG.CHANNELS):
+            r = float(np.clip(correlations[i, j], -1.0, 1.0))
+            if abs(r) > threshold:
+                discs.append({'edge': (f'ch{i}', f'ch{j}'), 'pearson_r': r, 'confidence': abs(r), 'operator_type': self.type})
         return discs
+
+
+class ObservationBuffer:
+    """Ring buffer holding the latest ``capacity`` observations of every agent at once.
+
+    The engine samples, stores and correlates all agents in single array operations instead
+    of one Python call per agent per frame.
+    """
+
+    def __init__(self, capacity: int, agents: int, channels: int) -> None:
+        self.capacity = max(int(capacity), 0)
+        self.values = np.zeros((self.capacity, agents, channels), dtype='float64')
+        self.env_factors = np.zeros(self.capacity, dtype='float64')
+        self.size = 0
+        self._next = 0
+
+    def append(self, samples: np.ndarray, env_factor: float) -> None:
+        if not self.capacity:
+            return
+        self.values[self._next] = samples
+        self.env_factors[self._next] = env_factor
+        self._next = (self._next + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+
+    def slots(self, count: int) -> np.ndarray:
+        """Buffer rows of the latest ``count`` observations, oldest first."""
+        return (self._next - count + np.arange(count)) % self.capacity
+
+    def windows(self, count: int) -> np.ndarray:
+        """The latest ``count`` observations per agent: shape (agents, count, channels)."""
+        return self.values[self.slots(count)].transpose(1, 0, 2)
+
+
+class AgentMemoryView(Sequence):
+    """Read-only memory of one engine agent, backed by the shared ObservationBuffer.
+
+    The engine records observations for its agents; ``Agent.observe`` is for standalone agents.
+    """
+
+    def __init__(self, buffer: ObservationBuffer, index: int) -> None:
+        self._buffer = buffer
+        self._index = index
+
+    def __len__(self) -> int:
+        return self._buffer.size
+
+    def __getitem__(self, item: Any) -> Any:
+        if isinstance(item, slice):
+            return [self[i] for i in range(*item.indices(len(self)))]
+        size = len(self)
+        position = item + size if item < 0 else item
+        if not 0 <= position < size:
+            raise IndexError('agent memory index out of range')
+        slot = int(self._buffer.slots(size)[position])
+        values = tuple(float(v) for v in self._buffer.values[slot, self._index])
+        return Observation(values=values, env_factor=float(self._buffer.env_factors[slot]))
+
 
 class LongitudinalMetricsRecorder:
     def __init__(self, output_dir: Path = DEFAULT_METRICS_DIR, run_id: str | None = None) -> None:
@@ -742,24 +975,65 @@ class LongitudinalMetricsRecorder:
         return csv_path, metadata_path
 
 
+@lru_cache(maxsize=16)
+def _frequency_grid(field_res: int) -> Any:
+    """Squared spatial frequency, in cycles per pixel, on the rfft2 grid."""
+    return xp.fft.fftfreq(field_res).reshape(field_res, 1) ** 2 + xp.fft.rfftfreq(field_res).reshape(1, -1) ** 2
+
+
+@lru_cache(maxsize=16)
+def _forcing_filter(field_res: int, correlation_length: float) -> Any:
+    """Gaussian spectral filter: white noise in, unit-variance noise with the requested spatial scale out."""
+    scale = -0.5 * (2.0 * math.pi * correlation_length) ** 2
+    full_grid = xp.fft.fftfreq(field_res)[:, None] ** 2 + xp.fft.fftfreq(field_res)[None, :] ** 2
+    return xp.exp(scale * _frequency_grid(field_res)) / xp.sqrt(xp.mean(xp.exp(scale * full_grid) ** 2))
+
+
+def correlated_noise(noise: Any) -> Any:
+    """Smooth white noise to the configured correlation length, keeping unit variance."""
+    res = noise.shape[-1]
+    return ifft_irfft(fft_rfft(noise) * _forcing_filter(res, float(CFG.FIELD_CORRELATION_LENGTH)), s=(res, res))
+
+
 def evolve_fields(F: Any, t: int, env_factor: float, env_mod: EnvironmentalModerators, coupled: bool = True) -> Any:
+    """Legacy (<=0.4) synthetic dynamics, kept bit-for-bit reproducible. Do not use for new work.
+
+    Its diffusion kernel omits (2*pi)^2, so it is inert, and its update has gain 1.24 near zero,
+    so every pixel grows until it saturates near +-1: within about 60 frames the field is frozen
+    salt-and-pepper noise. One coherence window copies channel 2 into channel 3 permanently.
+    """
+    diffusion = xp.asarray(LEGACY_DIFFUSION)[:, None, None]
     Fk = fft_rfft(F)
-    for ci in range(F.shape[0]):
-        Fk[ci] *= xp.exp(
-            -xp.asarray([0.002, 0.0015, 0.0018, 0.0012])[ci]
-            * (
-                xp.fft.fftfreq(CFG.FIELD_RES).reshape(CFG.FIELD_RES, 1) ** 2
-                + xp.fft.rfftfreq(CFG.FIELD_RES).reshape(1, -1) ** 2
-            )
-            * 0.5
-            * env_factor
-        )
+    Fk *= xp.exp(-diffusion * _frequency_grid(CFG.FIELD_RES) * 0.5 * env_factor)
     F = ifft_irfft(Fk, s=(CFG.FIELD_RES, CFG.FIELD_RES))
     if coupled:
         F[0] += 0.045 * F[1] * env_factor
     if coupled and env_mod.is_coherence_active(t):
         F[3] = 0.7 * F[3] + 0.3 * F[2]
     return 0.92 * F + 0.08 * xp.tanh(F * 4.0)
+
+
+def evolve_driven_fields(F: Any, t: int, env_factor: float, env_mod: EnvironmentalModerators, noise: Any,
+                         coupled: bool = True) -> Any:
+    """Advance the driven-dissipative field by one frame (default since 0.5).
+
+    Every channel relaxes toward zero with persistence FIELD_MEMORY, diffuses through a true
+    (2*pi*k)^2 Laplacian scaled by the moderator factor, and is renewed by spatially correlated
+    forcing. The field therefore stays stationary, structured and changing. A gentle saturation
+    keeps it nonlinear but stable. The paired arms receive identical ``noise``; only the two
+    injected terms differ, and coherence mixing fades once its window closes.
+    """
+    res = F.shape[-1]
+    memory = float(CFG.FIELD_MEMORY)
+    diffusion = xp.asarray(DRIVEN_DIFFUSION)[:, None, None]
+    propagator = memory * xp.exp(-diffusion * (2.0 * math.pi) ** 2 * _frequency_grid(res) * env_factor)
+    forcing = math.sqrt(1.0 - memory**2) * fft_rfft(noise) * _forcing_filter(res, float(CFG.FIELD_CORRELATION_LENGTH))
+    F = ifft_irfft(fft_rfft(F) * propagator + forcing, s=(res, res))
+    if coupled:
+        F[0] += CFG.COUPLING_STRENGTH * env_factor * F[1]
+        if env_mod.is_coherence_active(t):
+            F[3] = (1.0 - CFG.COHERENCE_MIXING) * F[3] + CFG.COHERENCE_MIXING * F[2]
+    return (F + 0.1 * (xp.tanh(F) - F)).astype(xp.float32)
 
 
 def build_simulation_state(
@@ -774,7 +1048,11 @@ def build_simulation_state(
     metrics = PerformanceMetrics()
     if target_field is None:
         env_mod: Any = EnvironmentalModerators()
-        F = xp.asarray(rng.normal(0, 0.02, (CFG.CHANNELS, CFG.FIELD_RES, CFG.FIELD_RES)), dtype=xp.float32)
+        shape = (CFG.CHANNELS, CFG.FIELD_RES, CFG.FIELD_RES)
+        if CFG.DYNAMICS == 'legacy':
+            F = xp.asarray(rng.normal(0, 0.02, shape), dtype=xp.float32)
+        else:  # Start from the forcing's stationary texture, so there is no burn-in transient.
+            F = correlated_noise(xp.asarray(rng.normal(0.0, 1.0, shape))).astype(xp.float32)
     else:
         env_mod = RealWorldModerator(base_threshold=CFG.DISCOVER_THRESH, base_decay=CFG.CONFIDENCE_DECAY, base_window=15)
         F = xp.asarray(target_field.field_for_frame(0), dtype=xp.float32)
@@ -815,10 +1093,15 @@ class SimulationEngine:
     A duplicate request for the current frame is idempotent. Earlier or skipped
     frames are rejected. Configure CFG before construction and keep it unchanged
     until the run completes; engines currently run sequentially, not concurrently.
+
+    Agents move, sample and correlate as one batch per frame. Random draws happen
+    in the same order as the original per-agent loop, so results are unchanged.
     """
 
     def __init__(self, target_field=None, recorder=None, calibrated_threshold=None,
                  live_dashboard=None, coupled=True):
+        if target_field is None:
+            validate_configuration()
         self.target_field = target_field
         self.recorder = recorder
         self.calibrated_threshold = calibrated_threshold
@@ -828,87 +1111,70 @@ class SimulationEngine:
         self.frame_count = CFG.FRAMES if target_field is None else min(CFG.FRAMES, target_field.frame_count)
         self.current_frame = -1
         self.snapshot = None
+        # Agents keep their public attributes, but positions and memories live in shared arrays.
+        self.positions = np.array([agent.pos for agent in self.agents], dtype=np.int64).reshape(-1, 2)
+        self.observations = ObservationBuffer(CFG.MEMORY, len(self.agents), CFG.CHANNELS)
+        for index, agent in enumerate(self.agents):
+            agent.pos = self.positions[index]
+            agent.memory = AgentMemoryView(self.observations, index)
+        self._agent_types = [agent.type for agent in self.agents]
+        self._pairs = channel_pairs(CFG.CHANNELS)
+        self._pair_names = [pair_name(i, j) for i, j in self._pairs]
+        self._pair_rows, self._pair_cols = (np.array(axis, dtype=np.intp) for axis in zip(*self._pairs, strict=True))
+        if target_field is None:
+            self.metrics.field = FieldDiagnostics(CFG.CORR_WINDOW)
 
     def step(self, frame: int) -> dict[str, Any]:
         if frame == self.current_frame and self.snapshot is not None:
             return self.snapshot
         if frame != self.current_frame + 1 or not 0 <= frame < self.frame_count:
             raise ValueError('Frames must advance sequentially within the configured run.')
-        target_field, recorder = self.target_field, self.recorder
-        calibrated_threshold, live_dashboard = self.calibrated_threshold, self.live_dashboard
-        agents, graph, conf_map, metrics, env_mod, F = (
-            self.agents, self.graph, self.conf_map, self.metrics, self.env_mod, self.F
-        )
+        target_field, env_mod, metrics = self.target_field, self.env_mod, self.metrics
         if target_field is None:
             env_mod.update(frame)
             modulation = env_mod.get_modulation(frame)
-            threshold = env_mod.discovery_threshold if calibrated_threshold is None else calibrated_threshold
-            confidence_decay = env_mod.confidence_decay
-            F = evolve_fields(F, frame, modulation, env_mod, coupled=self.coupled)
+            if CFG.DYNAMICS == 'legacy':
+                F = evolve_fields(self.F, frame, modulation, env_mod, coupled=self.coupled)
+            else:
+                noise = xp.asarray(rng.normal(0.0, 1.0, self.F.shape))
+                F = evolve_driven_fields(self.F, frame, modulation, env_mod, noise, coupled=self.coupled)
             F_cpu = cp.asnumpy(F) if on_gpu else F
             timestamp = pd.Timestamp('1970-01-01', tz='UTC') + pd.Timedelta(minutes=frame)
-            moderator_values = env_mod.snapshot()
             reg_deviation = _synthetic_reg_deviation(F_cpu)
             sensor_ratios = _synthetic_sensor_ratios(F_cpu)
+            metrics.field.log(frame, F_cpu)
         else:
             F_cpu = target_field.field_for_frame(frame)
             F = xp.asarray(F_cpu, dtype=xp.float32)
-            covariates = target_field.covariates_for_frame(frame)
-            env_mod.update(frame, covariates)
+            env_mod.update(frame, target_field.covariates_for_frame(frame))
             modulation = env_mod.get_modulation(frame)
-            threshold = env_mod.discovery_threshold if calibrated_threshold is None else calibrated_threshold
-            confidence_decay = env_mod.confidence_decay
             timestamp = target_field.timestamp_for_frame(frame)
-            moderator_values = env_mod.snapshot()
             reg_deviation = target_field.reg_variance_deviation(frame, CFG.CORR_WINDOW)
             sensor_ratios = target_field.sensor_anomaly_ratios(frame)
+        threshold = env_mod.discovery_threshold if self.calibrated_threshold is None else self.calibrated_threshold
+        is_coherence = env_mod.is_coherence_active(frame)
 
-        frame_discoveries: list[dict[str, Any]] = []
-        for agent in agents:
-            agent.pos = (agent.pos + rng.randint(-CFG.STEP_SIZE, CFG.STEP_SIZE + 1, 2)) % CFG.FIELD_RES
-            values = tuple(float(v) for v in F_cpu[:, agent.pos[0], agent.pos[1]])
-            agent.observe(Observation(values=values, env_factor=modulation))
-            for discovery in agent.discover(threshold=threshold):
-                u, v = discovery['edge']
-                key = f'{u}->{v}'
-                conf_map[key] = max(conf_map[key], discovery['confidence'])
-                graph.add_edge(u, v, weight=conf_map[key])
-                metrics.log_discovery(agent.type, discovery['edge'])
-                frame_discoveries.append(discovery)
-
-        for key in list(conf_map.keys()):
-            conf_map[key] *= confidence_decay
-            if conf_map[key] < 0.05:
-                u, v = key.split('->')
-                if graph.has_edge(u, v):
-                    graph.remove_edge(u, v)
-                del conf_map[key]
-            else:
-                u, v = key.split('->')
-                graph[u][v]['weight'] = conf_map[key]
-
-        metrics.log_frame(frame, len(frame_discoveries), modulation, env_mod.is_coherence_active(frame))
-        operator_density = len(agents) / float(CFG.FIELD_RES * CFG.FIELD_RES)
-        if recorder is not None:
-            recorder.log_frame(
+        frame_discoveries, detections, last_edge, shares = self._sense(F_cpu, modulation, threshold)
+        self._decay_associations(env_mod.confidence_decay)
+        metrics.log_frame(frame, detections, modulation, is_coherence)
+        if self.recorder is not None:
+            self.recorder.log_frame(
                 frame=frame,
                 timestamp=timestamp,
                 discoveries=frame_discoveries,
-                moderator_values=moderator_values,
-                operator_density=operator_density,
+                moderator_values=env_mod.snapshot(),
+                operator_density=len(self.agents) / float(CFG.FIELD_RES * CFG.FIELD_RES),
                 total_discoveries=metrics.total_discoveries,
                 reg_variance_deviation=reg_deviation,
                 sensor_anomaly_ratios=sensor_ratios,
             )
-
-        last_edge = '--'.join(frame_discoveries[-1]['edge']) if frame_discoveries else None
-        if live_dashboard is not None:
-            live_dashboard.update(
+        if self.live_dashboard is not None:
+            self.live_dashboard.update(
                 frame=frame,
-                discoveries_this_frame=len(frame_discoveries),
+                discoveries_this_frame=detections,
                 total_discoveries=metrics.total_discoveries,
                 modulation=modulation,
-                is_coherence=env_mod.is_coherence_active(frame),
+                is_coherence=is_coherence,
                 reg_deviation=reg_deviation,
                 sensor_ratios=sensor_ratios,
                 last_edge=last_edge,
@@ -918,9 +1184,59 @@ class SimulationEngine:
         self.current_frame = frame
         self.snapshot = {
             'field': F_cpu, 'modulation': modulation, 'reg_deviation': reg_deviation,
-            'sensor_ratios': sensor_ratios,
+            'sensor_ratios': sensor_ratios, 'coherence': is_coherence,
+            'detection_share': None if shares is None else dict(zip(self._pair_names, shares.tolist(), strict=True)),
         }
         return self.snapshot
+
+    def _sense(self, field: np.ndarray, env_factor: float,
+               threshold: float) -> tuple[list[dict[str, Any]], int, str | None, np.ndarray | None]:
+        """Move every agent, record its sample, and evaluate all six pairs for every full window.
+
+        Returns this frame's discovery records (only when recording), the detection count, the last
+        detected pair, and the share of agents detecting each pair (None until windows are full).
+        """
+        steps = rng.randint(-CFG.STEP_SIZE, CFG.STEP_SIZE + 1, size=self.positions.shape)
+        self.positions[:] = (self.positions + steps) % CFG.FIELD_RES
+        self.observations.append(field[:, self.positions[:, 0], self.positions[:, 1]].T, env_factor)
+        window = CFG.CORR_WINDOW
+        if self.observations.size < window or window > self.observations.capacity:
+            return [], 0, None, None
+        correlations = np.clip(pairwise_correlations(self.observations.windows(window))[:, self._pair_rows, self._pair_cols],
+                               -1.0, 1.0)
+        strengths = np.abs(correlations)
+        self.metrics.log_evaluation(strengths)
+        detected = strengths > threshold
+        shares = detected.mean(axis=0) if len(self.agents) else np.zeros(len(self._pairs))
+        agent_index, pair_index = np.nonzero(detected)  # agent-major, like the original loop
+        if not agent_index.size:
+            return [], 0, None, shares
+        agents, pairs = agent_index.tolist(), pair_index.tolist()
+        self.metrics.log_discoveries((self._agent_types[a] for a in agents), (self._pair_names[p] for p in pairs))
+        for p in dict.fromkeys(pairs):  # first-detection order keeps graph insertion order unchanged
+            i, j = self._pairs[p]
+            key = f'ch{i}->ch{j}'
+            self.conf_map[key] = max(self.conf_map[key], float(strengths[:, p].max()))
+            self.graph.add_edge(f'ch{i}', f'ch{j}', weight=self.conf_map[key])
+        discoveries = []
+        if self.recorder is not None:
+            discoveries = [
+                {'edge': (f'ch{self._pairs[p][0]}', f'ch{self._pairs[p][1]}'), 'pearson_r': float(correlations[a, p]),
+                 'confidence': float(strengths[a, p]), 'operator_type': self._agent_types[a]}
+                for a, p in zip(agents, pairs, strict=True)
+            ]
+        return discoveries, len(agents), self._pair_names[pairs[-1]], shares
+
+    def _decay_associations(self, confidence_decay: float) -> None:
+        for key in list(self.conf_map.keys()):
+            self.conf_map[key] *= confidence_decay
+            u, v = key.split('->')
+            if self.conf_map[key] < 0.05:
+                if self.graph.has_edge(u, v):
+                    self.graph.remove_edge(u, v)
+                del self.conf_map[key]
+            else:
+                self.graph[u][v]['weight'] = self.conf_map[key]
 
     def run(self) -> 'SimulationEngine':
         for frame in range(self.current_frame + 1, self.frame_count):
@@ -951,10 +1267,11 @@ def run_simulation(
     ax_field = fig.add_subplot(gs[0, 0])
     ax_stats = fig.add_subplot(gs[1, 0])
     fig.text(0.05, 0.94, 'IONS-X / DEEP EMERGENCE LAB', fontsize=20, weight='bold', color='#b9f5e8')
-    fig.text(0.05, 0.89, f'{preset.upper()}  ·  seed {CFG.SEED}  ·  {CFG.AGENTS} operators  ·  '
+    source = f'{CFG.DYNAMICS} field' if target_field is None else 'telemetry projection'
+    fig.text(0.05, 0.89, f'{preset.upper()}  ·  {source}  ·  seed {CFG.SEED}  ·  {CFG.AGENTS} operators  ·  '
              'exploratory associations', fontsize=11, color='#93b5b5')
-    fig.text(0.05, 0.025, 'Edge width: decayed |Pearson r|  /  Correlation does not establish causal direction.',
-             fontsize=10, color='#93b5b5')
+    fig.text(0.05, 0.025, 'Edge width and label: share of operators whose current window detects the pair  /  '
+             'Correlation does not establish causal direction.', fontsize=10, color='#93b5b5')
 
     frames_to_render = CFG.FRAMES if target_field is None else min(CFG.FRAMES, target_field.frame_count)
 
@@ -964,6 +1281,7 @@ def run_simulation(
     engine = SimulationEngine(target_field, recorder, calibrated_threshold, live_dashboard)
     graph, metrics = engine.graph, engine.metrics
     positions = nx.circular_layout(graph)
+    color_limit = [1e-9]  # only ever widens, so the colour scale never flickers between frames
 
     def update(frame: int) -> None:
 
@@ -973,22 +1291,34 @@ def run_simulation(
         reg_deviation = snapshot['reg_deviation']
         sensor_ratios = snapshot['sensor_ratios']
 
+        color_limit[0] = max(color_limit[0], float(np.percentile(np.abs(F_cpu[0]), 99.5)))
         ax_field.clear()
-        ax_field.imshow(F_cpu[0], cmap='magma')
-        ax_field.set_title(f'CH 0 / EM-RF field  ·  frame {frame + 1}/{frames_to_render}', fontsize=12)
+        ax_field.imshow(F_cpu[0], cmap='magma', vmin=-color_limit[0], vmax=color_limit[0])
+        ax_field.scatter(engine.positions[:, 1], engine.positions[:, 0], s=7, c='#b9f5e8', alpha=0.7, linewidths=0)
+        ax_field.set_title(f'CH 0 / EM-RF field + operators  ·  frame {frame + 1}/{frames_to_render}', fontsize=12)
         ax_field.axis('off')
 
+        # The shared graph keeps each pair's strongest recent |r| from any operator; with many operators,
+        # chance detections keep every edge alive. Consensus across operators is what separates them.
         ax_graph.clear()
         ax_graph.set_facecolor('#081b20')
-        labels = {'ch0': 'CH 0\nEM / RF', 'ch1': 'CH 1\nOptical / IR',
-                  'ch2': 'CH 2\nREG proxy', 'ch3': 'CH 3\nReference'}
-        nx.draw_networkx(graph, pos=positions, labels=labels, ax=ax_graph, with_labels=True,
-                node_color='#39c5bb', node_size=2700, font_size=10, font_weight='bold',
-                edge_color='#91e1da', width=[4 * d['weight'] for _, _, d in graph.edges(data=True)])
+        shares = snapshot['detection_share'] or {}
+        consensus = nx.Graph()
+        consensus.add_nodes_from(graph.nodes)
+        consensus.add_edges_from((*name.split('--'), {'share': share}) for name, share in shares.items() if share > 0)
+        edges = list(consensus.edges(data='share'))
+        nx.draw_networkx_nodes(consensus, positions, ax=ax_graph, node_color='#39c5bb', node_size=2700)
+        nx.draw_networkx_labels(consensus, positions, labels=CHANNEL_LABELS, ax=ax_graph, font_size=10, font_weight='bold')
+        nx.draw_networkx_edges(consensus, positions, ax=ax_graph, edge_color='#91e1da', node_size=2700,
+                               width=[1 + 16 * share for *_, share in edges], alpha=0.9)
+        nx.draw_networkx_edge_labels(consensus, positions, ax=ax_graph, font_size=9, font_color='#eaf4f3', label_pos=0.3,
+                                     edge_labels={(u, v): f'{share:.0%}' for u, v, share in edges},
+                                     bbox={'boxstyle': 'round', 'fc': '#081b20', 'ec': 'none'})
         ax_graph.set_xlim(-1.5, 1.5)
         ax_graph.set_ylim(-1.5, 1.5)
         ax_graph.set_axis_off()
-        ax_graph.set_title(f'ASSOCIATION MAP  /  {graph.number_of_edges()} active pairs', fontsize=12)
+        title = 'filling correlation windows' if snapshot['detection_share'] is None else 'operator consensus this frame'
+        ax_graph.set_title(f'ASSOCIATION MAP  /  {title}', fontsize=12)
 
         ax_stats.clear()
         ax_stats.axis('off')
@@ -999,6 +1329,7 @@ def run_simulation(
                 f'Association detections     {metrics.total_discoveries:,}\n'
                 f'Unique channel pairs       {len(metrics.edge_counts)} / 6\n'
                 f'Moderator factor           {modulation:.3f}\n'
+                f"Coherence window           {'active' if snapshot['coherence'] else '-'}\n"
                 f'REG diagnostic             {reg_deviation:.3f}\n'
                 f"EM / optical diagnostics   {sensor_ratios['em_rf_short_long']:.2f} / "
                 f"{sensor_ratios['optical_ir_short_long']:.2f}"
@@ -1043,51 +1374,147 @@ def _prepare_target_and_threshold(args: argparse.Namespace) -> tuple[TelemetryTa
     return target, None
 
 
-def experiment_passport(input_path: Path | None = None) -> dict[str, Any]:
+def experiment_passport(input_path: Path | None = None, synthetic: bool = True) -> dict[str, Any]:
     """Capture the effective configuration, implementation and input identities."""
     return {
+        'version': __version__,
         'configuration': {key: getattr(CFG, key) for key in DEFAULT_CONFIG},
         'source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'report_source_sha256': hashlib.sha256(Path(__file__).with_name('study_report.py').read_bytes()).hexdigest(),
         'input_sha256': hashlib.sha256(input_path.read_bytes()).hexdigest() if input_path is not None else None,
         'python': platform.python_version(),
-        'dependencies': {name: version(name) for name in ('numpy', 'pandas', 'networkx', 'matplotlib')},
+        'dependencies': {name: version(name) for name in ('numpy', 'scipy', 'pandas', 'networkx', 'matplotlib')},
         'backend': 'GPU' if on_gpu else 'CPU',
         'interpretation': 'Exploratory associations; confidence is absolute Pearson r, not a probability or causal evidence.',
-        'inactive_configuration': ['LAG_FRAMES', 'SAMPLE_PER_FRAME', 'GEOMAG_INFLUENCE', 'LUNAR_CYCLE', 'COHERENCE_BOOST'],
+        'inactive_configuration': inactive_configuration(synthetic),
     }
 
 
+# A numeric array as json.dumps(indent=...) lays it out. JSON strings cannot hold raw newlines,
+# so requiring them means only formatting, never string content, is ever collapsed.
+_INDENTED_NUMBER_ARRAY = re.compile(r'\[\n\s*(-?[0-9][0-9.eE+-]*(?:,\n\s*-?[0-9][0-9.eE+-]*)*)\n\s*\]')
+
+
 def write_report(path: Path, payload: Mapping[str, Any]) -> Path:
+    """Write indented, key-sorted JSON with each numeric array kept on one line."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, allow_nan=False), encoding='utf-8')
+    text = json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)
+    text = _INDENTED_NUMBER_ARRAY.sub(lambda match: '[' + ', '.join(item.strip() for item in match.group(1).split(',')) + ']', text)
+    path.write_text(text, encoding='utf-8')
     return path
+
+
+def nominal_false_alarm_rate(window: int, threshold: float) -> float | None:
+    """P(|r| > threshold) for ``window`` independent samples of two independent Gaussian channels.
+
+    This is the rate a reader would assume from the threshold alone. Under that null,
+    r * sqrt(n - 2) / sqrt(1 - r^2) follows Student's t with n - 2 degrees of freedom, so the
+    two-sided tail is the regularized incomplete beta I_{1 - threshold^2}((n - 2) / 2, 1 / 2).
+    """
+    if window < 3:
+        return None
+    if threshold >= 1:
+        return 0.0
+    if threshold <= 0:
+        return 1.0
+    from scipy.special import betainc
+
+    return float(betainc((window - 2) / 2, 0.5, 1.0 - threshold**2))
+
+
+def effective_samples(false_alarm_rate: float | None, threshold: float) -> float | None:
+    """Independent samples per window that would produce ``false_alarm_rate`` at ``threshold``.
+
+    Autocorrelated samples make a window behave like fewer independent ones; this inverts the
+    nominal rate to say how many.
+    """
+    if false_alarm_rate is None or not 0 < false_alarm_rate < 1 or not 0 < threshold < 1:
+        return None
+    from scipy.special import betainc
+
+    def rate(samples: float) -> float:
+        return float(betainc((samples - 2) / 2, 0.5, 1.0 - threshold**2))
+
+    low, high = 2.0 + 1e-9, 1e6
+    if rate(high) > false_alarm_rate:
+        return None
+    for _ in range(200):
+        middle = 0.5 * (low + high)
+        low, high = (middle, high) if rate(middle) > false_alarm_rate else (low, middle)
+    return 0.5 * (low + high)
+
+
+def calibrate_detector(runs: Sequence[Mapping[str, Any]], pairs: Sequence[str], window: int, threshold: float) -> dict[str, Any]:
+    """Compare the detector's nominal false-alarm rate with what the uncoupled arm actually produced.
+
+    Every pair in the uncoupled arm is unrelated by construction, so its detections are false
+    alarms. A held-out split then asks which threshold would restore the nominal rate, choosing it
+    on even-indexed seeds and judging it only on the odd-indexed seeds it never saw.
+    """
+    nominal = nominal_false_alarm_rate(window, threshold)
+    windows = sum(run['uncoupled']['evaluated_windows'] for run in runs)
+    by_pair = {pair: sum(run['uncoupled']['edge_counts'][pair] for run in runs) / windows if windows else None
+               for pair in pairs}
+    observed = math.fsum(by_pair.values()) / len(pairs) if windows else None
+    calibration = {
+        'threshold': threshold,
+        'correlation_window': window,
+        'nominal_false_alarm_rate': nominal,
+        'observed_false_alarm_rate': observed,
+        'false_alarm_inflation': observed / nominal if observed is not None and nominal else None,
+        'effective_samples_per_window': effective_samples(observed, threshold),
+        'false_alarm_rate_by_pair': by_pair,
+        'held_out': None,
+    }
+    tuning, evaluation = list(runs[0::2]), list(runs[1::2])
+    if not (tuning and evaluation and windows and nominal):
+        return calibration
+    cut = threshold_bin_for_rate(pooled_histogram(tuning, 'uncoupled', pairs), nominal)
+    evaluation_windows = sum(run['coupled']['evaluated_windows'] for run in evaluation)
+    calibration['held_out'] = {
+        'calibration_seeds': [run['seed'] for run in tuning],
+        'evaluation_seeds': [run['seed'] for run in evaluation],
+        'threshold_for_nominal_rate': cut / HISTOGRAM_BINS,
+        'false_alarm_rate': tail_count(pooled_histogram(evaluation, 'uncoupled', pairs), cut)
+        / (len(pairs) * sum(run['uncoupled']['evaluated_windows'] for run in evaluation)),
+        'sensitivity_at_default': {pair: sum(run['coupled']['edge_counts'][pair] for run in evaluation) / evaluation_windows
+                                   for pair in INJECTED_ASSOCIATIONS},
+        'sensitivity': {pair: tail_count(pooled_histogram(evaluation, 'coupled', [pair]), cut) / evaluation_windows
+                        for pair in INJECTED_ASSOCIATIONS},
+    }
+    return calibration
 
 
 def run_control_study(repeats: int, seed: int) -> dict[str, Any]:
     """Paired synthetic coupling ablation; repetitions, not agents, are the units.
 
     Both arms replay the same random draws. Only the two explicit cross-channel
-    coupling terms differ. This is a sensitivity benchmark, not a significance
-    test or a validated null model for empirical telemetry.
+    coupling terms differ. Seeds are independent replicates of this generator, so
+    seed-level statistics are valid for it; they are not a validated null model for
+    empirical telemetry.
     """
     if repeats < 1 or seed < 0 or seed + repeats > 2**32:
         raise ValueError('Paired seeds must fit in the RandomState seed range.')
     if CFG.FRAMES < CFG.CORR_WINDOW:
         raise ValueError('Control studies require at least CORR_WINDOW frames to evaluate associations.')
+    validate_configuration()
     saved_seed, saved_state = CFG.SEED, rng.get_state()
     rows = []
-    pairs = [f'ch{i}--ch{j}' for i in range(CFG.CHANNELS) for j in range(i + 1, CFG.CHANNELS)]
+    pairs = [pair_name(i, j) for i, j in channel_pairs(CFG.CHANNELS)]
     try:
         for run_seed in range(seed, seed + repeats):
             arms = {}
             for name, coupled in (('coupled', True), ('uncoupled', False)):
                 set_seed(run_seed)
-                engine = SimulationEngine(coupled=coupled).run()
+                metrics = SimulationEngine(coupled=coupled).run().metrics
+                histogram = metrics.abs_r_histogram if metrics.abs_r_histogram is not None else np.zeros((len(pairs), HISTOGRAM_BINS))
                 arms[name] = {
-                    'total_discoveries': engine.metrics.total_discoveries,
-                    'edge_counts': {pair: engine.metrics.edge_counts.get(pair, 0) for pair in pairs},
-                    'coherence_frames': list(engine.metrics.coherence_frames),
+                    'total_discoveries': metrics.total_discoveries,
+                    'edge_counts': {pair: metrics.edge_counts.get(pair, 0) for pair in pairs},
+                    'coherence_frames': list(metrics.coherence_frames),
+                    'evaluated_windows': metrics.evaluated_windows,
+                    'abs_r_histogram': {pair: [int(count) for count in histogram[k]] for k, pair in enumerate(pairs)},
+                    'field_diagnostics': metrics.field.summary(),
                 }
             rows.append({'seed': run_seed, **arms,
                          'paired_difference': arms['coupled']['total_discoveries'] - arms['uncoupled']['total_discoveries']})
@@ -1096,14 +1523,22 @@ def run_control_study(repeats: int, seed: int) -> dict[str, Any]:
         rng.set_state(saved_state)
     opportunities = CFG.AGENTS * (CFG.FRAMES - CFG.CORR_WINDOW + 1)
     differences = [row['paired_difference'] for row in rows]
+
+    def field_mean(arm: str, key: str, pair: str | None = None) -> float | None:
+        values = [row[arm]['field_diagnostics'][key] if pair is None else row[arm]['field_diagnostics'][key][pair]
+                  for row in rows]
+        values = [value for value in values if value is not None]
+        return float(np.mean(values)) if values else None
+
     return {
-        'schema_version': 2,
+        'schema_version': 3,
         'kind': 'paired_synthetic_coupling_ablation',
+        'dynamics': CFG.DYNAMICS,
         'passport': experiment_passport(),
         'repetitions': repeats,
         'starting_seed': seed,
         'opportunities_per_pair_per_run': opportunities,
-        'injected_associations': {'ch0--ch1': 'continuous', 'ch2--ch3': 'coherence windows only'},
+        'injected_associations': dict(INJECTED_ASSOCIATIONS),
         'mean_paired_difference': float(np.mean(differences)),
         'paired_difference_range': [min(differences), max(differences)],
         'association_rates': {
@@ -1112,10 +1547,21 @@ def run_control_study(repeats: int, seed: int) -> dict[str, Any]:
             for pair in pairs
         },
         'paired_association_effects': paired_association_summary(rows, opportunities),
+        'detector_calibration': calibrate_detector(rows, pairs, CFG.CORR_WINDOW, float(CFG.DISCOVER_THRESH)),
+        'discrimination': discrimination_summary(rows),
+        'field_ground_truth': {
+            'pair_correlation_mean': {pair: {arm: field_mean(arm, 'pair_correlation_mean', pair) for arm in ('coupled', 'uncoupled')}
+                                      for pair in pairs},
+            'window_memory': {arm: field_mean(arm, 'window_memory') for arm in ('coupled', 'uncoupled')},
+            'neighbour_correlation': {arm: field_mean(arm, 'neighbour_correlation') for arm in ('coupled', 'uncoupled')},
+        },
         'runs': rows,
         'limitations': [
-            'No p-values: overlapping windows and agents observing one field are dependent.',
-            'The uncoupled arm preserves field evolution, moderators, agent paths and initial random draws.',
+            ('Seeds, not agents or windows, are the independent units. Sign-flip p-values are exact over seeds and '
+             'Holm-adjusted across the six pairs; they describe this generator and configuration only.'),
+            'Agents and overlapping windows observing one field are dependent; their counts are never used as sample sizes.',
+            'The nominal false-alarm rate assumes independent samples. The uncoupled arm measures the real rate.',
+            'The uncoupled arm preserves field evolution, forcing noise, moderators, agent paths and all random draws.',
             'This measures detector sensitivity to injected coupling, not causal discovery on real-world data.',
             'Operator types are labels for one shared detector; lagged detection is not implemented.',
         ],
@@ -1126,19 +1572,20 @@ def build_run_summary(result: RunResult, metrics: 'PerformanceMetrics') -> dict[
     """Assemble the lightweight per-run summary written beside the animation."""
     config = (result.passport or {}).get('configuration', {})
     window = config.get('CORR_WINDOW', CFG.CORR_WINDOW)
-    eligible = max(0, len(metrics.discovery_rate_history) - window + 1) * result.agents
+    channels = config.get('CHANNELS', CFG.CHANNELS)
+    eligible = metrics.evaluated_windows
     return {
-        'schema_version': 3,
+        'schema_version': 4,
         'evaluation': {
             'status': 'evaluated' if eligible else 'insufficient_observations',
             'correlation_window': window,
             'opportunities_per_pair': eligible,
             'association_rates': {
-                f'ch{i}--ch{j}': metrics.edge_counts.get(f'ch{i}--ch{j}', 0) / eligible if eligible else None
-                for i in range(config.get('CHANNELS', CFG.CHANNELS))
-                for j in range(i + 1, config.get('CHANNELS', CFG.CHANNELS))
+                pair_name(i, j): metrics.edge_counts.get(pair_name(i, j), 0) / eligible if eligible else None
+                for i, j in channel_pairs(channels)
             },
         },
+        'field_diagnostics': metrics.field.summary() if metrics.field is not None else None,
         'output_path': str(result.output_path),
         'preset': result.preset,
         'experiment': result.experiment,
@@ -1186,7 +1633,7 @@ def main(argv: Sequence[str] | None = None) -> RunResult:
     if target_field is not None:
         CFG.FRAMES = min(CFG.FRAMES, target_field.frame_count)
     effective_preset = 'empirical' if args.input_data is not None and args.preset == 'synthetic' else args.preset
-    passport = experiment_passport(args.input_data)
+    passport = experiment_passport(args.input_data, synthetic=target_field is None)
     if target_field is not None:
         passport['telemetry_quality'] = target_field.quality_report
     recorder = LongitudinalMetricsRecorder(output_dir=args.output.parent) if effective_preset in {'baseline', 'empirical'} else None

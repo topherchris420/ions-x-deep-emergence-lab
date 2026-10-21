@@ -2,6 +2,16 @@
 
 ## Done
 
+- **Audited the generator against pixel-level ground truth (0.5).** Found that the legacy field
+  froze, had no spatial structure, and made its "transient" coupling permanent. Replaced it with a
+  driven-dissipative default, kept `--dynamics legacy` bit-for-bit reproducible, and regenerate
+  both committed benchmarks in the test suite.
+- Added detector calibration (nominal vs observed false alarms, effective samples, held-out
+  recalibration), exact seed-level sign-flip tests with Holm adjustment, |r| histograms with
+  AUC/ROC, field diagnostics, and an operator-consensus association map.
+- Batched the engine (about eight times faster, identical results), made telemetry projection
+  lazy, and made coherence lookups logarithmic.
+
 - Added portable study reports with per-seed effects and explicit evaluation eligibility.
 
 - Added a renderer-independent sequential engine, headless JSON runs, and paired
@@ -35,6 +45,26 @@
 - **Added deterministic seed control** (`--seed N`): seedable module RNG, identical metrics sidecar reproduction across runs,
   and comprehensive test coverage. (Was "Next UX Task 2".)
 - **Validated packaging and build** (`python -m build` & `ions-x` CLI): verified standalone build and console script execution. (Was "Next UX Task 3".)
+
+## Next Research Tasks
+
+### 1. Autocorrelation-aware detection
+
+The uncoupled arm fires 3-4 times as often as the threshold implies because consecutive samples
+repeat one another. Estimate each window's effective sample size (for example from lag-1
+autocorrelation) and test against the correspondingly adjusted threshold, then check the
+recalibrated false-alarm rate on held-out seeds.
+
+### 2. Lagged operators
+
+`forecaster` and `integrator` are labels for the same zero-lag detector. Implement genuinely
+lagged or integrating operators, inject a lagged coupling, and compare operator types in the
+paired study.
+
+### 3. Seed planning
+
+Report the seeds needed for a target Holm-adjusted p-value and effect size, so a study is sized
+before it is run.
 
 ## Next UX Tasks
 
