@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ions-x-deep-emergence-lab"
-version = "0.4.0"
-description = "Reproducible multi-agent sensing experiments with paired coupling controls and inspectable evidence."
+dynamic = ["version"]
+description = "Reproducible multi-agent sensing experiments with paired coupling controls, calibrated detectors, and inspectable evidence."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -44,6 +44,9 @@ ions-x = "ions_x_deep_emergence:cli"
 
 [tool.setuptools]
 py-modules = ["ions_x_deep_emergence", "study_report"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ions_x_deep_emergence.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

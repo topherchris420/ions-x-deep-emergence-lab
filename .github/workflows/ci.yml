@@ -66,6 +66,7 @@ jobs:
         run: |
           python ions_x_deep_emergence.py --quick --headless --frames 8 --agents 4 --field-res 8 --output outputs/headless.json
           python ions_x_deep_emergence.py --quick --control-study 2 --agents 4 --field-res 8 --output outputs/control-study.json
+          python ions_x_deep_emergence.py --quick --control-study 2 --agents 4 --field-res 8 --dynamics legacy --output outputs/legacy-study.json
       - name: Assert artifacts exist
         run: |
           test -s outputs/ci_smoke.html
@@ -73,6 +74,7 @@ jobs:
           test -s outputs/headless.json
           test -s outputs/control-study.json
           test -s outputs/control-study.html
+          test -s outputs/legacy-study.html
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
