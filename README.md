@@ -8,7 +8,7 @@
 
 ![Actual simulation: driven field with moving operators, operator-consensus association map, and observation log](docs/assets/demo.gif)
 
-*Actual 80-frame run: 40 operators (dots) on a 32×32 driven field, seed 42. Each edge's width and label show the share of operators whose current window detects that pair.*
+*Recorded simulation, seed 42. Forty moving operators sample a 32 × 32 driven field over 80 frames. In the association map, line width and labels show the share of operators detecting each pair in the current window.*
 
 IONS-X places moving sensing agents inside a four-channel field. Agents retain observations, measure rolling correlations, and contribute to a shared, decaying association graph. You can watch a run, analyze sensor CSVs, or run paired synthetic experiments without rendering a single frame.
 
